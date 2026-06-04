@@ -624,6 +624,7 @@ export default function App() {
   const [routeStartKey, setRouteStartKey] = useState('gps');
   const [routeActive, setRouteActive] = useState(false);
   const [routeMeta, setRouteMeta] = useState(null);
+  const [mobileSheetOpen, setMobileSheetOpen] = useState(true);
   const [compareModalOpen, setCompareModalOpen] = useState(false);
   const [layersMenuOpen, setLayersMenuOpen] = useState(false);
   const [incidentsActive, setIncidentsActive] = useState(true);
@@ -1169,6 +1170,7 @@ export default function App() {
   const handleSelectLocation = (location) => {
     playClickSound();
     setActiveLocation(location);
+    setMobileSheetOpen(true);
     if (leafletMapInstance.current) {
       leafletMapInstance.current.flyTo({ center: toLngLat(location.coords), zoom: 15, duration: 1200 });
     }
@@ -1242,7 +1244,7 @@ export default function App() {
     }
   };
 
-  const handleDrawRoute = () => {
+  const handleDrawRoute = async () => {
     playClickSound();
     if (!leafletMapInstance.current) return;
 
@@ -1274,28 +1276,32 @@ export default function App() {
     }
 
     triggerToast("Requesting GPS", "Allow location access to start live navigation.", false);
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        const start = [position.coords.latitude, position.coords.longitude];
-        if (userLayerGroup.current) {
-          userLayerGroup.current.forEach((marker) => marker.remove());
-          userLayerGroup.current = [];
-          const userIcon = document.createElement('div');
-          userIcon.className = 'gps-marker';
-          userIcon.innerHTML = '<span></span>';
-          const marker = new maplibregl.Marker({ element: userIcon, anchor: 'center' })
-            .setLngLat(toLngLat(start))
-            .setPopup(new maplibregl.Popup({ offset: 18 }).setText('Your GPS location'))
-            .addTo(leafletMapInstance.current);
-          userLayerGroup.current.push(marker);
-        }
-        drawRouteBetween(start, activeLocation.coords, activeLocation.name);
-      },
-      () => {
-        triggerToast("GPS Permission Needed", "GPS was blocked. Pick a start location from the selector.", true);
-      },
-      { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 }
-    );
+    try {
+      const position = await getGpsPosition();
+      const start = [position.coords.latitude, position.coords.longitude];
+      if (userLayerGroup.current) {
+        userLayerGroup.current.forEach((marker) => marker.remove());
+        userLayerGroup.current = [];
+        const userIcon = document.createElement('div');
+        userIcon.className = 'gps-marker';
+        userIcon.innerHTML = '<span></span>';
+        const marker = new maplibregl.Marker({ element: userIcon, anchor: 'center' })
+          .setLngLat(toLngLat(start))
+          .setPopup(new maplibregl.Popup({ offset: 18 }).setText('Your GPS location'))
+          .addTo(leafletMapInstance.current);
+        userLayerGroup.current.push(marker);
+      }
+      drawRouteBetween(start, activeLocation.coords, activeLocation.name);
+    } catch (error) {
+      try {
+        const fallback = await getApproximateIpLocation();
+        showUserLocation(fallback);
+        drawRouteBetween(fallback.coords, activeLocation.coords, activeLocation.name);
+        triggerToast("Approx Route", `${getGpsErrorMessage(error)} Routing from approximate network location.`, true);
+      } catch {
+        triggerToast("GPS Failed", `${getGpsErrorMessage(error)} Pick a saved start location if GPS is unavailable.`, true);
+      }
+    }
   };
 
   const handleClearRoute = () => {
@@ -1311,6 +1317,20 @@ export default function App() {
     triggerToast("Route Cleared", "Active map route lines have been removed.", false);
   };
 
+  const handleCloseMobileSheet = () => {
+    playClickSound();
+    routeLineCoordinatesRef.current = [];
+    clearMapLibreLayer('route-line');
+    if (userLayerGroup.current) {
+      userLayerGroup.current.forEach((marker) => marker.remove());
+      userLayerGroup.current = [];
+    }
+    setRouteActive(false);
+    setRouteMeta(null);
+    setActiveLocation(DEFAULT_ACTIVE_LOCATION);
+    setMobileSheetOpen(false);
+  };
+
   const handleMapClick = (event) => {
     if (!event?.lngLat) return;
     playClickSound();
@@ -1324,6 +1344,7 @@ export default function App() {
     };
 
     setActiveLocation(droppedPlace);
+    setMobileSheetOpen(true);
     if (spiderGridActive) {
       renderSpiderGrid(droppedPlace.coords);
     }
@@ -1368,6 +1389,7 @@ export default function App() {
         leafletMapInstance.current.flyTo({ center: [randomLng, randomLat], zoom: 14, duration: 1200 });
       }
       setActiveLocation(simulatedLocation);
+      setMobileSheetOpen(true);
       if (spiderGridActive) {
         renderSpiderGrid(simulatedLocation.coords);
       }
@@ -1494,6 +1516,80 @@ export default function App() {
     triggerToast("Travel Mode", `${mode?.label || 'Route'} mode selected.`, false);
   };
 
+  const getGpsPosition = () => new Promise((resolve, reject) => {
+    if (!navigator.geolocation) {
+      reject({ code: 0, message: 'Geolocation is not supported in this browser.' });
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      resolve,
+      (firstError) => {
+        if (firstError.code === 1) {
+          reject(firstError);
+          return;
+        }
+
+        navigator.geolocation.getCurrentPosition(
+          resolve,
+          reject,
+          { enableHighAccuracy: false, timeout: 20000, maximumAge: 60000 }
+        );
+      },
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 15000 }
+    );
+  });
+
+  const getGpsErrorMessage = (error) => {
+    if (error?.code === 1) return "Location permission is blocked for this browser tab.";
+    if (error?.code === 2) return "Location service could not find your position. Check Windows Location Services or try again.";
+    if (error?.code === 3) return "Location request timed out. Try again or move closer to GPS/Wi-Fi signal.";
+    return error?.message || "GPS location is unavailable right now.";
+  };
+
+  const getApproximateIpLocation = async () => {
+    const response = await fetch('https://ipapi.co/json/');
+    if (!response.ok) throw new Error('Approximate location lookup failed.');
+    const data = await response.json();
+    const lat = Number(data.latitude);
+    const lng = Number(data.longitude);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+      throw new Error('Approximate location coordinates were unavailable.');
+    }
+    return {
+      coords: [lat, lng],
+      address: [data.city, data.region, data.country_name].filter(Boolean).join(', ') || `${lat.toFixed(5)}, ${lng.toFixed(5)}`,
+      accuracy: 'approx'
+    };
+  };
+
+  const showUserLocation = ({ coords, address, accuracy }) => {
+    const location = {
+      name: accuracy === 'approx' ? "Approximate Location" : "Your Location",
+      coords,
+      address,
+      temp: "--",
+      traffic: accuracy === 'approx' ? "Approximate location from network lookup" : `Current GPS position selected${accuracy ? `, accuracy ${Math.round(accuracy)} m` : ''}`,
+      type: "gps"
+    };
+
+    userLayerGroup.current.forEach((marker) => marker.remove());
+    userLayerGroup.current = [];
+    const userIcon = document.createElement('div');
+    userIcon.className = 'gps-marker';
+    userIcon.innerHTML = '<span></span>';
+    const marker = new maplibregl.Marker({ element: userIcon, anchor: 'center' })
+      .setLngLat(toLngLat(coords))
+      .setPopup(new maplibregl.Popup({ offset: 18 }).setText(location.name))
+      .addTo(leafletMapInstance.current);
+    userLayerGroup.current.push(marker);
+
+    setActiveLocation(location);
+    setRouteStartKey('gps');
+    leafletMapInstance.current?.flyTo({ center: toLngLat(coords), zoom: accuracy === 'approx' ? 12 : 15, duration: 1000 });
+    return location;
+  };
+
   const handleZoomIn = () => {
     playClickSound();
     if (leafletMapInstance.current) {
@@ -1516,7 +1612,7 @@ export default function App() {
     triggerToast("Map Reset", "Returned to center Hyderabad coordinates.", false);
   };
 
-  const handleGetUserLocation = () => {
+  const handleGetUserLocation = async () => {
     playClickSound();
     if (!navigator.geolocation) {
       triggerToast("GPS Unavailable", "This browser does not support GPS location.", true);
@@ -1524,39 +1620,24 @@ export default function App() {
     }
 
     triggerToast("Getting Location", "Requesting your current location...", false);
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        const coords = [position.coords.latitude, position.coords.longitude];
-        const location = {
-          name: "Your Location",
-          coords,
-          address: `${coords[0].toFixed(5)}, ${coords[1].toFixed(5)}`,
-          temp: "--",
-          traffic: "Current GPS position selected",
-          type: "gps"
-        };
-
-        userLayerGroup.current.forEach((marker) => marker.remove());
-        userLayerGroup.current = [];
-        const userIcon = document.createElement('div');
-        userIcon.className = 'gps-marker';
-        userIcon.innerHTML = '<span></span>';
-        const marker = new maplibregl.Marker({ element: userIcon, anchor: 'center' })
-          .setLngLat(toLngLat(coords))
-          .setPopup(new maplibregl.Popup({ offset: 18 }).setText('Your location'))
-          .addTo(leafletMapInstance.current);
-        userLayerGroup.current.push(marker);
-
-        setActiveLocation(location);
-        setRouteStartKey('gps');
-        leafletMapInstance.current?.flyTo({ center: toLngLat(coords), zoom: 15, duration: 1000 });
-        triggerToast("Location Found", "Showing your current location.", false);
-      },
-      () => {
-        triggerToast("GPS Permission Needed", "Allow location access to show your current location.", true);
-      },
-      { enableHighAccuracy: true, timeout: 15000, maximumAge: 15000 }
-    );
+    try {
+      const position = await getGpsPosition();
+      const coords = [position.coords.latitude, position.coords.longitude];
+      showUserLocation({
+        coords,
+        address: `${coords[0].toFixed(5)}, ${coords[1].toFixed(5)}`,
+        accuracy: position.coords.accuracy
+      });
+      triggerToast("Location Found", "Showing your current location.", false);
+    } catch (error) {
+      try {
+        const fallback = await getApproximateIpLocation();
+        showUserLocation(fallback);
+        triggerToast("Approx Location", `${getGpsErrorMessage(error)} Showing approximate network location instead.`, true);
+      } catch {
+        triggerToast("GPS Failed", getGpsErrorMessage(error), true);
+      }
+    }
   };
 
   return (
@@ -1566,7 +1647,7 @@ export default function App() {
       <div className="flex-1 flex relative overflow-hidden h-full w-full">
         
         {/* 1. LEFT THIN UTILITY NAVIGATION BAR - Pure high-contrast solid Dark Blue (#0b132b) */}
-        <nav className="w-16 bg-[#0b132b] border-r border-[#06b6d4]/20 flex flex-col justify-between items-center py-4 z-40 shrink-0">
+        <nav className="hidden w-16 bg-[#0b132b] border-r border-[#06b6d4]/20 md:flex flex-col justify-between items-center py-4 z-40 shrink-0">
           <div className="flex flex-col items-center gap-6 w-full">
             {/* Hamburger Button */}
             <button 
@@ -1653,7 +1734,7 @@ export default function App() {
         </nav>
 
         {/* 2. MAIN FLOATING SEARCH PANEL - Solid High-Contrast Dark Blue background (No transparent washouts!) */}
-        <section className="absolute top-3 left-3 right-3 z-30 flex flex-col gap-2 pointer-events-none md:top-4 md:left-20 md:right-auto md:w-[390px] md:max-w-[calc(100vw-85px)]">
+        <section className="absolute top-3 left-3 right-3 z-30 hidden flex-col gap-2 pointer-events-none md:top-4 md:left-20 md:right-auto md:flex md:w-[390px] md:max-w-[calc(100vw-85px)]">
           
           {/* Floating Search Bar */}
           <form 
@@ -1766,7 +1847,7 @@ export default function App() {
         </section>
 
         {/* 3. TOP HORIZONTAL CATEGORY CHIPS - Rich Solid Dark Blue backdrops */}
-        <section className="absolute top-[64px] left-3 right-3 z-30 pointer-events-none overflow-x-auto flex items-center gap-2 pb-2 scrollbar-none md:top-4 md:left-[490px] md:right-4">
+        <section className="absolute top-[64px] left-3 right-3 z-30 pointer-events-none hidden items-center gap-2 overflow-x-auto pb-2 scrollbar-none md:top-4 md:left-[490px] md:right-4 md:flex">
           <div className="flex gap-2 pointer-events-auto whitespace-nowrap">
             <button 
               onClick={() => handleCategoryClick('restaurants')}
@@ -1820,11 +1901,124 @@ export default function App() {
           />
         </div>
 
+        {/* MOBILE MAP UI */}
+        <section className="absolute inset-x-3 top-[calc(env(safe-area-inset-top)+10px)] z-40 flex flex-col gap-2 pointer-events-none md:hidden">
+          <form
+            onSubmit={handleSearchSubmit}
+            className="pointer-events-auto flex h-14 items-center gap-2 rounded-full bg-[#2f3033]/96 px-3 shadow-2xl backdrop-blur"
+          >
+            <Search size={22} className="shrink-0 text-slate-200" />
+            <input
+              type="text"
+              placeholder="Search here"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="min-w-0 flex-1 bg-transparent text-base font-medium text-slate-100 placeholder:text-slate-300 focus:outline-none"
+            />
+            <button type="button" onClick={handleGetUserLocation} className="grid h-10 w-10 shrink-0 place-items-center rounded-full text-slate-100" title="Get your location">
+              <Crosshair size={20} />
+            </button>
+            <button type="submit" className="grid h-10 w-10 shrink-0 place-items-center rounded-full text-slate-100" title="Search">
+              <ChevronRight size={22} />
+            </button>
+          </form>
+
+          {searchQuery.trim() && searchSuggestions.length > 0 && (
+            <div className="pointer-events-auto max-h-[42vh] overflow-y-auto rounded-3xl bg-[#121212]/96 py-2 shadow-2xl">
+              {searchSuggestions.map((suggestion) => (
+                <button
+                  key={suggestion.key}
+                  type="button"
+                  onClick={() => {
+                    playClickSound();
+                    setSearchQuery(suggestion.place.name);
+                    handleSelectLocation(suggestion.place);
+                  }}
+                  className="flex w-full items-center gap-3 px-4 py-3 text-left"
+                >
+                  <div className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-slate-700 text-slate-200">
+                    <Clock size={20} />
+                  </div>
+                  <div className="min-w-0 flex-1 border-b border-white/10 pb-2">
+                    <div className="truncate text-base font-semibold text-slate-50">{suggestion.place.name}</div>
+                    <div className="truncate text-sm text-slate-400">{suggestion.place.address}</div>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+
+          <div className="pointer-events-auto flex gap-2 overflow-x-auto pb-1 scrollbar-none mobile-chip-row">
+            <button onClick={handleRecenter} className="flex shrink-0 items-center gap-2 rounded-full border border-[#60a5fa]/60 bg-[#2f3033]/96 px-4 py-2 text-sm font-bold text-slate-100 shadow-xl">
+              <Compass size={16} />
+              Ask Maps
+            </button>
+            <button onClick={() => handleDrawRoute()} className="flex shrink-0 items-center gap-2 rounded-full bg-[#2f3033]/96 px-4 py-2 text-sm font-bold text-slate-100 shadow-xl">
+              <Car size={16} />
+              Directions
+            </button>
+            <button onClick={() => handleCategoryClick('restaurants')} className="shrink-0 rounded-full bg-[#2f3033]/96 px-4 py-2 text-sm font-bold text-slate-100 shadow-xl">
+              Restaurants
+            </button>
+            <button onClick={() => handleCategoryClick('hotels')} className="shrink-0 rounded-full bg-[#2f3033]/96 px-4 py-2 text-sm font-bold text-slate-100 shadow-xl">
+              Hotels
+            </button>
+            <button onClick={() => handleCategoryClick('transit')} className="shrink-0 rounded-full bg-[#2f3033]/96 px-4 py-2 text-sm font-bold text-slate-100 shadow-xl">
+              Transit
+            </button>
+          </div>
+        </section>
+
+        <div className="absolute right-4 bottom-[calc(46svh+20px)] z-40 flex flex-col gap-3 pointer-events-auto md:hidden">
+          <button onClick={() => { playClickSound(); setLayersMenuOpen(!layersMenuOpen); }} className="grid h-12 w-12 place-items-center rounded-2xl bg-[#005d63] text-cyan-100 shadow-2xl" aria-label="Map layers and style settings">
+            <Layers size={22} />
+          </button>
+          <button onClick={handleGetUserLocation} className="grid h-12 w-12 place-items-center rounded-2xl bg-[#3b3b3b]/95 text-slate-100 shadow-2xl" title="Get your location">
+            <Crosshair size={22} />
+          </button>
+          <button onClick={handleDrawRoute} className="grid h-14 w-14 place-items-center rounded-2xl bg-[#67d9e8] text-[#062024] shadow-2xl" title="Directions">
+            <Navigation size={24} />
+          </button>
+        </div>
+
+        {layersMenuOpen && (
+          <div className="absolute right-4 bottom-[calc(46svh+11rem)] z-50 w-[190px] rounded-2xl border border-white/10 bg-[#191a1d]/96 p-3 text-xs text-slate-100 shadow-2xl backdrop-blur md:hidden">
+            <div className="mb-2 text-[10px] font-bold uppercase tracking-wide text-cyan-300">Map type</div>
+            <div className="grid grid-cols-2 gap-2">
+              {[
+                ['dark', 'Dark'],
+                ['normal', 'Normal'],
+                ['light', 'Light'],
+                ['satellite', 'Satellite']
+              ].map(([id, label]) => (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => { playClickSound(); setMapStyle(id); setLayersMenuOpen(false); }}
+                  className={`rounded-xl border px-2 py-2 text-left font-bold ${mapStyle === id ? 'border-cyan-300 bg-cyan-400/15 text-cyan-200' : 'border-white/10 bg-white/5 text-slate-200'}`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <div className="mt-3 space-y-2 border-t border-white/10 pt-3">
+              <label className="flex items-center gap-2">
+                <input type="checkbox" checked={constructionActive} onChange={() => { playClickSound(); setConstructionActive(!constructionActive); }} className="accent-[#f97316]" />
+                <span>Hyderabad hazards</span>
+              </label>
+              <label className="flex items-center gap-2">
+                <input type="checkbox" checked={incidentsActive} onChange={() => { playClickSound(); setIncidentsActive(!incidentsActive); }} className="accent-[#06b6d4]" />
+                <span>Incidents</span>
+              </label>
+            </div>
+          </div>
+        )}
+
         {/* 4. SELECTED PLACE CARD */}
-        <div className="absolute bottom-[82px] left-2 right-2 z-30 max-h-[34vh] overflow-y-auto bg-[#0b132b] border border-[#06b6d4]/30 rounded-2xl p-2.5 shadow-2xl glow-cyan pointer-events-auto flex flex-col gap-2 md:bottom-6 md:left-20 md:right-auto md:w-[390px] md:max-h-none md:overflow-visible md:p-4 md:gap-3">
-          <div className="flex items-start justify-between gap-3 border-b border-[#06b6d4]/15 pb-3">
+        <div className="absolute bottom-[118px] left-2 right-2 z-30 hidden max-h-[30vh] overflow-y-auto bg-[#0b132b] border border-[#06b6d4]/30 rounded-2xl p-2 shadow-2xl glow-cyan pointer-events-auto flex-col gap-2 md:bottom-6 md:left-20 md:right-auto md:flex md:w-[390px] md:max-h-none md:overflow-visible md:p-4 md:gap-3">
+          <div className="flex items-start justify-between gap-3 border-b border-[#06b6d4]/15 pb-2 md:pb-3">
             <div className="min-w-0">
-              <h3 className="text-base font-bold text-slate-50 leading-tight">{activeLocation.name}</h3>
+              <h3 className="text-sm font-bold text-slate-50 leading-tight md:text-base">{activeLocation.name}</h3>
               <p className="text-xs text-slate-400 mt-1 leading-snug">{activeLocation.address}</p>
             </div>
             <span className="text-xs text-slate-300 flex items-center gap-1 shrink-0">
@@ -1832,7 +2026,7 @@ export default function App() {
             </span>
           </div>
 
-          <div className="grid grid-cols-4 gap-2">
+          <div className="grid grid-cols-4 gap-1.5 md:gap-2">
             <button onClick={handleDrawRoute} className="map-action-button" title="Directions">
               <Route size={16} />
               <span>Directions</span>
@@ -1880,7 +2074,7 @@ export default function App() {
             </select>
           </div>
 
-          <div className="grid grid-cols-3 gap-2">
+          <div className="hidden grid-cols-3 gap-2 md:grid">
             <div className="route-stat">
               <Navigation size={14} />
               <span>{routeMeta?.distance || "Route"}</span>
@@ -1898,7 +2092,7 @@ export default function App() {
             </div>
           </div>
 
-          <div className="flex items-center gap-2 text-[11px] text-slate-400">
+          <div className="hidden items-center gap-2 text-[11px] text-slate-400 md:flex">
             <AlertTriangle size={14} className="text-amber-400 shrink-0" />
             <span className="truncate">{activeLocation.traffic}</span>
           </div>
@@ -1910,7 +2104,7 @@ export default function App() {
         </div>
 
         {/* 5. BOTTOM LEFT LAYER SELECTION PREVIEW */}
-        <div className="absolute bottom-[184px] right-3 z-30 pointer-events-auto md:bottom-6 md:left-[500px] md:right-auto">
+        <div className="absolute right-3 top-[112px] z-30 hidden pointer-events-auto md:top-auto md:bottom-6 md:left-[500px] md:right-auto md:block">
           <button 
             onClick={() => { playClickSound(); setLayersMenuOpen(!layersMenuOpen); }}
             aria-label="Map layers and style settings"
@@ -1927,7 +2121,7 @@ export default function App() {
         </div>
 
         {/* 6. BOTTOM RIGHT MAP ACTIONS AND CONTROLS */}
-        <div className="absolute bottom-[184px] left-3 z-30 flex flex-col gap-3 pointer-events-auto items-start md:bottom-6 md:left-auto md:right-6 md:items-end">
+        <div className="absolute left-3 top-[112px] z-30 hidden flex-col gap-3 pointer-events-auto items-start md:top-auto md:bottom-6 md:left-auto md:right-6 md:flex md:items-end">
           
           {/* Style / Layers Configuration Menu */}
           {(layersMenuOpen || !leafletLoaded) && (
@@ -2040,22 +2234,64 @@ export default function App() {
 
         </div>
 
-        {/* MOBILE ROUTE CONTROLS */}
-        <div className="fixed inset-x-2 bottom-2 z-50 rounded-2xl border border-[#06b6d4]/30 bg-[#0b132b]/98 p-2 shadow-2xl md:hidden pointer-events-auto space-y-2">
-          <div className="grid grid-cols-[auto_1fr] items-center gap-2">
-            <span className="text-[10px] font-bold uppercase tracking-wide text-slate-400">From</span>
-            <select
-              value={routeStartKey}
-              onChange={(event) => { playClickSound(); setRouteStartKey(event.target.value); }}
-              className="min-w-0 rounded-lg border border-[#06b6d4]/20 bg-[#030712] px-2 py-2 text-xs font-semibold text-white outline-none"
-            >
-              <option value="gps">My GPS location</option>
-              {savedPlaces.map((place) => (
-                <option key={place.id} value={place.id}>{place.name}</option>
-              ))}
-            </select>
+        {!mobileSheetOpen && (
+          <button
+            type="button"
+            onClick={() => { playClickSound(); setMobileSheetOpen(true); }}
+            className="fixed bottom-[calc(env(safe-area-inset-bottom)+14px)] left-1/2 z-50 flex -translate-x-1/2 items-center gap-2 rounded-full bg-[#101113]/95 px-5 py-3 text-sm font-bold text-slate-100 shadow-2xl backdrop-blur md:hidden"
+          >
+            <MapPin size={17} className="text-cyan-300" />
+            Place panel
+          </button>
+        )}
+
+        {/* MOBILE PLACE / ROUTE SHEET */}
+        {mobileSheetOpen && (
+        <div className="fixed inset-x-0 bottom-0 z-50 max-h-[46svh] overflow-y-auto rounded-t-[28px] border-t border-white/10 bg-[#101113]/98 px-3 pb-[calc(env(safe-area-inset-bottom)+12px)] pt-2 shadow-[0_-24px_70px_rgba(0,0,0,0.5)] backdrop-blur md:hidden pointer-events-auto mobile-bottom-sheet">
+          <div className="mx-auto mb-3 h-1 w-11 rounded-full bg-white/25" />
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0 flex-1">
+              <h2 className="truncate text-xl font-semibold leading-tight text-slate-50">{activeLocation.name}</h2>
+              <p className="mt-1 truncate text-sm text-slate-400">{activeLocation.address}</p>
+              <div className="mt-1 flex min-w-0 items-center gap-2 text-sm text-slate-300">
+                <span>{activeLocation.temp}</span>
+                <CloudSun size={15} className="text-amber-300" />
+                <span className="truncate text-slate-500">1 min nearby</span>
+              </div>
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <button onClick={handleSaveLocation} className="mobile-circle-button" title="Save">
+                <Bookmark size={20} />
+              </button>
+              <button onClick={handleShareLocation} className="mobile-circle-button" title="Share">
+                <Share2 size={20} />
+              </button>
+              <button onClick={handleCloseMobileSheet} className="mobile-circle-button" title="Close panel">
+                <X size={22} />
+              </button>
+            </div>
           </div>
-          <div className="grid grid-cols-5 gap-1.5">
+
+          <div className="mt-4 flex gap-2 overflow-x-auto pb-1 scrollbar-none">
+            <button onClick={handleDrawRoute} className="mobile-primary-pill">
+              <Route size={20} />
+              Directions
+            </button>
+            <button onClick={handleDrawRoute} className="mobile-secondary-pill">
+              <Navigation size={19} />
+              Start
+            </button>
+            <button onClick={handleNearbySearch} className="mobile-secondary-pill">
+              <Search size={18} />
+              Ask
+            </button>
+            <button onClick={handleSaveLocation} className="mobile-secondary-pill">
+              <Bookmark size={18} />
+              Save
+            </button>
+          </div>
+
+          <div className="mt-3 grid grid-cols-5 gap-1.5 border-t border-white/10 pt-3">
             {TRAVEL_MODES.map((mode) => (
               <button
                 key={mode.id}
@@ -2064,12 +2300,45 @@ export default function App() {
                 className={`mobile-travel-button ${travelMode === mode.id ? 'active' : ''}`}
                 title={mode.label}
               >
-                {renderTravelModeIcon(mode.id, 17)}
+                {renderTravelModeIcon(mode.id, 18)}
                 <span>{mode.label}</span>
               </button>
             ))}
           </div>
+
+          <div className="mt-3 grid grid-cols-[auto_1fr] items-center gap-2 rounded-2xl border border-white/10 bg-black/35 px-3 py-2">
+            <span className="text-[10px] font-bold uppercase tracking-wide text-slate-400">From</span>
+            <select
+              value={routeStartKey}
+              onChange={(event) => { playClickSound(); setRouteStartKey(event.target.value); }}
+              className="min-w-0 rounded-xl border border-white/10 bg-[#07090d] px-3 py-2 text-sm font-semibold text-white outline-none"
+            >
+              <option value="gps">My GPS location</option>
+              {savedPlaces.map((place) => (
+                <option key={place.id} value={place.id}>{place.name}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="mt-3 grid grid-cols-3 gap-2">
+            <div className="route-stat">
+              <Navigation size={14} />
+              <span>{routeMeta?.distance || "--"}</span>
+              <small>Distance</small>
+            </div>
+            <div className="route-stat">
+              <Clock size={14} />
+              <span>{routeMeta?.duration || "--"}</span>
+              <small>Duration</small>
+            </div>
+            <div className="route-stat">
+              <Fuel size={14} />
+              <span>{routeMeta?.fuel || "--"}</span>
+              <small>Fuel</small>
+            </div>
+          </div>
         </div>
+        )}
 
       </div>
 
