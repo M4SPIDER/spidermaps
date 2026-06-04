@@ -2,6 +2,7 @@ import React, { useState, useMemo, useEffect, useRef } from 'react';
 import maplibregl from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import './index.css';
+import MobileNavigationPanel from './components/MobileNavigationPanel.jsx';
 import { 
   Menu, 
   MapPin, 
@@ -28,6 +29,7 @@ import {
   Crosshair,
   CloudSun, 
   AlertTriangle,
+  ChevronLeft,
   ChevronRight,
   Map as MapIcon,
   Compass
@@ -123,11 +125,11 @@ const SEARCH_ALIASES = {
 const PUBLIC_SEARCH_PLACE_KEYS = ['hyderabad', 'goa', 'ambMall', 'sits'];
 
 const TRAVEL_MODES = [
-  { id: 'car', label: 'Car', osrmProfile: 'driving', fuelKmPerLiter: 15, speedFallbackKmh: 34 },
-  { id: 'bike', label: 'Bike', osrmProfile: 'driving', fuelKmPerLiter: 42, speedFallbackKmh: 32 },
+  { id: 'car', label: 'Car', osrmProfile: 'driving', fuelKmPerLiter: 16, speedFallbackKmh: 34 },
+  { id: 'bike', label: 'Bike', osrmProfile: 'driving', fuelKmPerLiter: 40, speedFallbackKmh: 32 },
   { id: 'cycle', label: 'Cycle', osrmProfile: 'bike', fuelKmPerLiter: null, speedFallbackKmh: 14 },
   { id: 'walking', label: 'Walking', osrmProfile: 'foot', fuelKmPerLiter: null, speedFallbackKmh: 4.8 },
-  { id: 'tracking', label: 'Tracking', osrmProfile: 'driving', fuelKmPerLiter: 15, speedFallbackKmh: 28 }
+  { id: 'tracking', label: 'Tracking', osrmProfile: 'driving', fuelKmPerLiter: 16, speedFallbackKmh: 28 }
 ];
 
 const SAVED_PLACES_DB = 'spidermaps-db';
@@ -387,6 +389,26 @@ const getDistanceMeters = (a, b) => {
   return 2 * earthRadius * Math.asin(Math.sqrt(h));
 };
 
+const formatRouteInstruction = (step) => {
+  const maneuver = step?.maneuver || {};
+  const roadName = step?.name ? ` ${step.name}` : '';
+  const modifier = maneuver.modifier || '';
+  const distance = step?.distance ? Math.max(10, Math.round(step.distance / 10) * 10) : 0;
+  const distanceText = distance ? `${distance} m` : 'soon';
+
+  if (maneuver.type === 'arrive') return 'Arrive at destination';
+  if (maneuver.type === 'depart') return `Go straight${roadName}`;
+  if (modifier.includes('left')) return `Turn left in ${distanceText}${roadName}`;
+  if (modifier.includes('right')) return `Turn right in ${distanceText}${roadName}`;
+  if (modifier.includes('straight')) return `Go straight for ${distanceText}${roadName}`;
+  if (maneuver.type === 'roundabout') return `Enter roundabout in ${distanceText}${roadName}`;
+  return `Continue for ${distanceText}${roadName}`;
+};
+
+const getEstimatedRouteMinutes = (distanceKm, mode) => (
+  Math.max(1, Math.round((distanceKm / mode.speedFallbackKmh) * 60))
+);
+
 const makeCirclePolygon = ([lat, lng], radiusMeters, steps = 48) => {
   const coords = [];
   const earthRadius = 6371000;
@@ -622,9 +644,17 @@ export default function App() {
   const [mapStyle, setMapStyle] = useState('dark');
   const [travelMode, setTravelMode] = useState('car');
   const [routeStartKey, setRouteStartKey] = useState('gps');
+  const [routeCustomStartPlace, setRouteCustomStartPlace] = useState(null);
+  const [routeFromQuery, setRouteFromQuery] = useState('My GPS location');
+  const [routeToQuery, setRouteToQuery] = useState('');
+  const [routeSearchTarget, setRouteSearchTarget] = useState(null);
   const [routeActive, setRouteActive] = useState(false);
   const [routeMeta, setRouteMeta] = useState(null);
+  const [navTelemetry, setNavTelemetry] = useState({ speedKmh: 0, coveredKm: 0 });
   const [mobileSheetOpen, setMobileSheetOpen] = useState(true);
+  const [mobileMode, setMobileMode] = useState('place');
+  const [mobileNavMenuOpen, setMobileNavMenuOpen] = useState(false);
+  const [mobileRecenterExpanded, setMobileRecenterExpanded] = useState(false);
   const [compareModalOpen, setCompareModalOpen] = useState(false);
   const [layersMenuOpen, setLayersMenuOpen] = useState(false);
   const [incidentsActive, setIncidentsActive] = useState(true);
@@ -638,6 +668,8 @@ export default function App() {
   const constructionLayerGroup = useRef([]);
   const userLayerGroup = useRef([]);
   const routeLineCoordinatesRef = useRef([]);
+  const lastRouteEndpointsRef = useRef(null);
+  const navTelemetryRef = useRef({ lastCoords: null, coveredMeters: 0 });
   const activeBaseStyleRef = useRef(mapStyle);
   const audioCtxRef = useRef(null);
   const hazardWatchIdRef = useRef(null);
@@ -752,7 +784,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (routeStartKey !== 'gps' && !savedPlaces.some((place) => place.id === routeStartKey)) {
+    if (routeStartKey !== 'gps' && routeStartKey !== 'custom' && !savedPlaces.some((place) => place.id === routeStartKey)) {
       setRouteStartKey('gps');
     }
   }, [routeStartKey, savedPlaces]);
@@ -1167,10 +1199,71 @@ export default function App() {
     };
   }, [routeStartKey, travelMode]);
 
+  useEffect(() => {
+    if (mobileMode !== 'nav' || !navigator.geolocation) {
+      navTelemetryRef.current = { lastCoords: null, coveredMeters: 0 };
+      setNavTelemetry({ speedKmh: 0, coveredKm: 0 });
+      return undefined;
+    }
+
+    navTelemetryRef.current = { lastCoords: null, coveredMeters: 0 };
+    const watchId = navigator.geolocation.watchPosition(
+      (position) => {
+        const coords = [position.coords.latitude, position.coords.longitude];
+        const speedKmh = Math.max(0, ((position.coords.speed || 0) * 3.6));
+        const previous = navTelemetryRef.current.lastCoords;
+        let coveredMeters = navTelemetryRef.current.coveredMeters;
+
+        if (previous) {
+          const delta = getDistanceMeters(previous, coords);
+          if (delta < 300) coveredMeters += delta;
+        }
+
+        navTelemetryRef.current = { lastCoords: coords, coveredMeters };
+        setNavTelemetry({
+          speedKmh,
+          coveredKm: coveredMeters / 1000
+        });
+
+        const destination = lastRouteEndpointsRef.current?.end;
+        if (destination) {
+          const selectedMode = TRAVEL_MODES.find((mode) => mode.id === travelMode) || TRAVEL_MODES[0];
+          const remainingKm = getDistanceMeters(coords, destination) / 1000;
+          const liveSpeed = speedKmh > 3 ? speedKmh : selectedMode.speedFallbackKmh;
+          const remainingMinutes = Math.max(1, Math.round((remainingKm / liveSpeed) * 60));
+          const fuelLiters = selectedMode.fuelKmPerLiter ? Math.max(0.1, remainingKm / selectedMode.fuelKmPerLiter) : 0;
+
+          setRouteMeta((current) => {
+            if (!current) return current;
+            const nearestStep = current.steps
+              ?.filter((step) => step.coords)
+              .map((step) => ({ ...step, metersAway: getDistanceMeters(coords, step.coords) }))
+              .sort((a, b) => a.metersAway - b.metersAway)[0];
+
+            return {
+              ...current,
+              distance: `${remainingKm.toFixed(1)} km`,
+              duration: `${remainingMinutes} min`,
+              fuel: `${fuelLiters.toFixed(1)} L`,
+              instruction: nearestStep?.instruction || current.instruction
+            };
+          });
+        }
+      },
+      () => {
+        setNavTelemetry((current) => ({ ...current, speedKmh: 0 }));
+      },
+      { enableHighAccuracy: true, maximumAge: 3000, timeout: 15000 }
+    );
+
+    return () => navigator.geolocation.clearWatch(watchId);
+  }, [mobileMode, travelMode]);
+
   const handleSelectLocation = (location) => {
     playClickSound();
     setActiveLocation(location);
     setMobileSheetOpen(true);
+    setMobileMode('place');
     if (leafletMapInstance.current) {
       leafletMapInstance.current.flyTo({ center: toLngLat(location.coords), zoom: 15, duration: 1200 });
     }
@@ -1180,12 +1273,80 @@ export default function App() {
     triggerToast("Location Selected", `Map navigated to ${location.name}.`, false);
   };
 
-  const drawRouteBetween = async (start, end, label = "destination") => {
+  const createSearchDestination = () => {
+    const query = searchQuery.trim();
+    if (!query) return activeLocation;
+
+    const currentName = normalizeSearchText(activeLocation.name);
+    const currentAddress = normalizeSearchText(activeLocation.address);
+    const normalizedQuery = normalizeSearchText(query);
+
+    if (
+      activeLocation.name !== DEFAULT_ACTIVE_LOCATION.name &&
+      (currentName.includes(normalizedQuery) || normalizedQuery.includes(currentName) || currentAddress.includes(normalizedQuery))
+    ) {
+      return activeLocation;
+    }
+
+    const directMatch = resolvePlaceFromText(query, null);
+    if (directMatch && directMatch.type !== 'search') return directMatch;
+
+    const bestMatch = searchSuggestions[0]?.place;
+    if (bestMatch) return bestMatch;
+
+    const randomLat = 17.5177 + (Math.random() - 0.5) * 0.04;
+    const randomLng = 78.4990 + (Math.random() - 0.5) * 0.04;
+    return {
+      name: query,
+      coords: [randomLat, randomLng],
+      address: `Located coordinate within Alwal area bounds`,
+      temp: "31°C",
+      traffic: "Route estimate available from your selected start point",
+      type: "search"
+    };
+  };
+
+  const resolvePlaceFromText = (value, fallback = activeLocation) => {
+    const query = value.trim();
+    if (!query) return fallback;
+    if (normalizeSearchText(query) === 'my gps location') return null;
+
+    const bestLocal = searchablePlaces
+      .map((place) => {
+        const text = `${place.name} ${place.address} ${SEARCH_ALIASES[place.key] || ''}`;
+        return { place, score: getSearchScore(query, text) };
+      })
+      .filter((item) => item.score > 0 || fuzzySearch(query, `${item.place.name} ${item.place.address}`))
+      .sort((a, b) => b.score - a.score)[0]?.place;
+
+    if (bestLocal) return bestLocal;
+
+    const bestGlobal = globalSuggestions.find((suggestion) => fuzzySearch(query, `${suggestion.place.name} ${suggestion.place.address}`))?.place;
+    if (bestGlobal) return bestGlobal;
+
+    const randomLat = 17.5177 + (Math.random() - 0.5) * 0.04;
+    const randomLng = 78.4990 + (Math.random() - 0.5) * 0.04;
+    return {
+      name: query,
+      coords: [randomLat, randomLng],
+      address: `Located coordinate within Alwal area bounds`,
+      temp: "31°C",
+      traffic: "Route estimate available from your selected start point",
+      type: "search"
+    };
+  };
+
+  useEffect(() => {
+    setRouteToQuery(activeLocation.name === DEFAULT_ACTIVE_LOCATION.name ? '' : activeLocation.name);
+  }, [activeLocation.name]);
+
+  const drawRouteBetween = async (start, end, label = "destination", modeId = travelMode) => {
     const map = leafletMapInstance.current;
     if (!map || !leafletLoaded) return;
 
     clearMapLibreLayer('route-line');
-    const selectedMode = TRAVEL_MODES.find((mode) => mode.id === travelMode) || TRAVEL_MODES[0];
+    lastRouteEndpointsRef.current = { start, end, label };
+    const selectedMode = TRAVEL_MODES.find((mode) => mode.id === modeId) || TRAVEL_MODES[0];
 
     const drawRouteLine = (routeCoordinates) => {
       routeLineCoordinatesRef.current = routeCoordinates;
@@ -1198,7 +1359,7 @@ export default function App() {
     };
 
     try {
-      const routeUrl = `https://router.project-osrm.org/route/v1/${selectedMode.osrmProfile}/${start[1]},${start[0]};${end[1]},${end[0]}?overview=full&geometries=geojson`;
+      const routeUrl = `https://router.project-osrm.org/route/v1/${selectedMode.osrmProfile}/${start[1]},${start[0]};${end[1]},${end[0]}?overview=full&geometries=geojson&steps=true`;
       const response = await fetch(routeUrl);
       if (!response.ok) throw new Error('OSRM route request failed');
       const data = await response.json();
@@ -1211,12 +1372,22 @@ export default function App() {
       const durationMinutes = Math.round(route.duration / 60);
       const fuelLiters = selectedMode.fuelKmPerLiter ? Math.max(0.1, distanceKm / selectedMode.fuelKmPerLiter) : 0;
       const constructionHits = getConstructionHitsForRoute(routeCoordinates);
+      const routeSteps = route.legs?.flatMap((leg) => leg.steps || []) || [];
+      const firstActionStep = routeSteps.find((step) => step.maneuver?.type !== 'depart') || routeSteps[0];
 
       setRouteMeta({
         distance: `${distanceKm.toFixed(1)} km`,
         duration: `${durationMinutes} min`,
         fuel: `${fuelLiters.toFixed(1)} L`,
         source: selectedMode.label,
+        instruction: formatRouteInstruction(firstActionStep),
+        nextInstruction: firstActionStep?.name || label,
+        steps: routeSteps.map((step) => ({
+          instruction: formatRouteInstruction(step),
+          distance: step.distance || 0,
+          coords: step.maneuver?.location ? [step.maneuver.location[1], step.maneuver.location[0]] : null,
+          name: step.name || ''
+        })).slice(0, 12),
         constructionHits
       });
       setRouteActive(true);
@@ -1237,6 +1408,9 @@ export default function App() {
         duration: `${durationMinutes} min`,
         fuel: `${fuelLiters.toFixed(1)} L`,
         source: `${selectedMode.label} estimate`,
+        instruction: `Go straight towards ${label}`,
+        nextInstruction: label,
+        steps: [{ instruction: `Go straight towards ${label}`, distance: distanceKm * 1000, name: label }],
         constructionHits
       });
       setRouteActive(true);
@@ -1244,12 +1418,21 @@ export default function App() {
     }
   };
 
-  const handleDrawRoute = async () => {
+  const handleDrawRoute = async (destination = activeLocation, startOverride) => {
     playClickSound();
     if (!leafletMapInstance.current) return;
 
-    if (routeStartKey !== 'gps') {
-      if (!routeStartPlace) {
+    if (!destination || destination.name === DEFAULT_ACTIVE_LOCATION.name) {
+      triggerToast("Choose Destination", "Search or click a destination before starting directions.", true);
+      return;
+    }
+
+    const hasExplicitStart = arguments.length > 1;
+    const stateStartPlace = routeStartKey === 'custom' ? routeCustomStartPlace : routeStartPlace;
+    const startPlace = hasExplicitStart ? startOverride : (routeStartKey !== 'gps' ? stateStartPlace : null);
+
+    if (startPlace) {
+      if (!startPlace) {
         triggerToast("Choose Start", "Save a place first, then choose it as your route start.", true);
         return;
       }
@@ -1260,13 +1443,18 @@ export default function App() {
         startIcon.className = 'gps-marker selected-start';
         startIcon.innerHTML = '<span></span>';
         const marker = new maplibregl.Marker({ element: startIcon, anchor: 'center' })
-          .setLngLat(toLngLat(routeStartPlace.coords))
-          .setPopup(new maplibregl.Popup({ offset: 18 }).setText(`Start: ${routeStartPlace.name}`))
+          .setLngLat(toLngLat(startPlace.coords))
+          .setPopup(new maplibregl.Popup({ offset: 18 }).setText(`Start: ${startPlace.name}`))
           .addTo(leafletMapInstance.current);
         userLayerGroup.current.push(marker);
       }
-      drawRouteBetween(routeStartPlace.coords, activeLocation.coords, activeLocation.name);
-      triggerToast("Route Start", `Starting from ${routeStartPlace.name}.`, false);
+      drawRouteBetween(startPlace.coords, destination.coords, destination.name);
+      triggerToast("Route Start", `Starting from ${startPlace.name}.`, false);
+      return;
+    }
+
+    if (!hasExplicitStart && routeStartKey !== 'gps') {
+      triggerToast("Choose Start", "Save a place first, then choose it as your route start.", true);
       return;
     }
 
@@ -1291,12 +1479,12 @@ export default function App() {
           .addTo(leafletMapInstance.current);
         userLayerGroup.current.push(marker);
       }
-      drawRouteBetween(start, activeLocation.coords, activeLocation.name);
+      drawRouteBetween(start, destination.coords, destination.name);
     } catch (error) {
       try {
         const fallback = await getApproximateIpLocation();
-        showUserLocation(fallback);
-        drawRouteBetween(fallback.coords, activeLocation.coords, activeLocation.name);
+        showUserLocation(fallback, { select: false });
+        drawRouteBetween(fallback.coords, destination.coords, destination.name);
         triggerToast("Approx Route", `${getGpsErrorMessage(error)} Routing from approximate network location.`, true);
       } catch {
         triggerToast("GPS Failed", `${getGpsErrorMessage(error)} Pick a saved start location if GPS is unavailable.`, true);
@@ -1328,7 +1516,226 @@ export default function App() {
     setRouteActive(false);
     setRouteMeta(null);
     setActiveLocation(DEFAULT_ACTIVE_LOCATION);
+    setMobileMode('place');
     setMobileSheetOpen(false);
+  };
+
+  const handleMobileDirections = async () => {
+    const destination = mobileMode === 'route' && routeToQuery.trim()
+      ? resolvePlaceFromText(routeToQuery, activeLocation)
+      : createSearchDestination();
+    const startPlace = mobileMode === 'route'
+      ? (routeFromQuery.trim() && normalizeSearchText(routeFromQuery) !== 'my gps location' ? resolvePlaceFromText(routeFromQuery, null) : null)
+      : routeCustomStartPlace;
+    setActiveLocation(destination);
+    if (startPlace) {
+      setRouteCustomStartPlace(startPlace);
+      setRouteStartKey('custom');
+      setRouteFromQuery(startPlace.name);
+    } else if (mobileMode === 'route') {
+      setRouteCustomStartPlace(null);
+      setRouteStartKey('gps');
+      setRouteFromQuery('My GPS location');
+    }
+    setRouteToQuery(destination.name);
+    setSearchQuery('');
+    setMobileMode('route');
+    setMobileSheetOpen(true);
+    if (leafletMapInstance.current) {
+      leafletMapInstance.current.flyTo({ center: toLngLat(destination.coords), zoom: 15, duration: 900 });
+    }
+    try {
+      if (startPlace) {
+        await drawRouteBetween(startPlace.coords, destination.coords, destination.name);
+      } else {
+        await handleDrawRoute(destination, null);
+      }
+    } finally {
+      setMobileMode('route');
+      setMobileSheetOpen(true);
+    }
+  };
+
+  const refreshRouteFromEditor = async (nextStart = routeCustomStartPlace, nextDestination = activeLocation, forceGpsStart = false) => {
+    const destination = nextDestination?.name === DEFAULT_ACTIVE_LOCATION.name ? resolvePlaceFromText(routeToQuery, activeLocation) : nextDestination;
+    if (!destination || destination.name === DEFAULT_ACTIVE_LOCATION.name) {
+      triggerToast("Choose Destination", "Search a destination first.", true);
+      return;
+    }
+
+    setActiveLocation(destination);
+    setRouteToQuery(destination.name);
+
+    if (nextStart) {
+      setRouteCustomStartPlace(nextStart);
+      setRouteStartKey('custom');
+      await drawRouteBetween(nextStart.coords, destination.coords, destination.name);
+      triggerToast("Route Updated", `${nextStart.name} to ${destination.name}.`, false);
+      return;
+    }
+
+    if (!forceGpsStart && routeStartKey !== 'gps' && routeStartPlace) {
+      await drawRouteBetween(routeStartPlace.coords, destination.coords, destination.name);
+      triggerToast("Route Updated", `${routeStartPlace.name} to ${destination.name}.`, false);
+      return;
+    }
+
+    await handleDrawRoute(destination, null);
+  };
+
+  const handleRouteSearchSelect = async (place) => {
+    if (!routeSearchTarget || !place) return;
+
+    playClickSound();
+    setSearchQuery('');
+    setMobileMode('route');
+    setMobileSheetOpen(true);
+
+    if (routeSearchTarget === 'from') {
+      setRouteSearchTarget(null);
+      setRouteFromQuery(place.name);
+      await refreshRouteFromEditor(place, activeLocation);
+      return;
+    }
+
+    setRouteSearchTarget(null);
+    setRouteToQuery(place.name);
+    setActiveLocation(place);
+    if (leafletMapInstance.current) {
+      leafletMapInstance.current.flyTo({ center: toLngLat(place.coords), zoom: 15, duration: 900 });
+    }
+    const customStart = routeStartKey === 'custom'
+      ? routeCustomStartPlace
+      : (normalizeSearchText(routeFromQuery) !== 'my gps location' ? resolvePlaceFromText(routeFromQuery, null) : null);
+    await refreshRouteFromEditor(customStart, place, !customStart);
+  };
+
+  const openRouteSearch = (target) => {
+    playClickSound();
+    setRouteSearchTarget(target);
+    setSearchQuery(target === 'from' ? '' : routeToQuery);
+    setMobileSheetOpen(false);
+  };
+
+  const useGpsRouteStart = async () => {
+    playClickSound();
+    setRouteSearchTarget(null);
+    setRouteCustomStartPlace(null);
+    setRouteStartKey('gps');
+    setRouteFromQuery('My GPS location');
+    setMobileMode('route');
+    setMobileSheetOpen(true);
+    await refreshRouteFromEditor(null, activeLocation, true);
+  };
+
+  const handleMobileStart = async () => {
+    const destination = mobileMode === 'route' && routeToQuery.trim()
+      ? resolvePlaceFromText(routeToQuery, activeLocation)
+      : createSearchDestination();
+    const startPlace = mobileMode === 'route'
+      ? (routeFromQuery.trim() && normalizeSearchText(routeFromQuery) !== 'my gps location' ? resolvePlaceFromText(routeFromQuery, null) : null)
+      : routeCustomStartPlace;
+    setActiveLocation(destination);
+    if (startPlace) {
+      setRouteCustomStartPlace(startPlace);
+      setRouteStartKey('custom');
+      setRouteFromQuery(startPlace.name);
+    } else if (mobileMode === 'route') {
+      setRouteCustomStartPlace(null);
+      setRouteStartKey('gps');
+      setRouteFromQuery('My GPS location');
+    }
+    setRouteToQuery(destination.name);
+    setSearchQuery('');
+    setLayersMenuOpen(false);
+    setMobileNavMenuOpen(false);
+    setMobileRecenterExpanded(false);
+    setMobileMode('nav');
+    setMobileSheetOpen(false);
+    if (startPlace) {
+      await drawRouteBetween(startPlace.coords, destination.coords, destination.name);
+    } else {
+      await handleDrawRoute(destination, null);
+    }
+  };
+
+  const handleMobileAsk = () => {
+    playClickSound();
+    setSearchQuery('');
+    setMobileMode('ask');
+    setMobileSheetOpen(true);
+  };
+
+  const handleExitMobileNavigation = () => {
+    setMobileNavMenuOpen(false);
+    setMobileRecenterExpanded(false);
+    handleClearRoute();
+    setMobileMode('route');
+    setMobileSheetOpen(true);
+  };
+
+  const handleMobileNavRecenter = () => {
+    playClickSound();
+    if (mobileRecenterExpanded) {
+      setMobileRecenterExpanded(false);
+      return;
+    }
+    setMobileRecenterExpanded(true);
+    window.setTimeout(() => {
+      handleGetUserLocation();
+    }, 0);
+  };
+
+  const handleMobileRouteMenuToggle = () => {
+    playClickSound();
+    setMobileNavMenuOpen((value) => !value);
+  };
+
+  const handleMobileSearchAlongRoute = (query = '') => {
+    playClickSound();
+    setMobileNavMenuOpen(false);
+    if (query) {
+      setSearchQuery(query);
+    }
+    setMobileMode('ask');
+    setMobileSheetOpen(true);
+    triggerToast("Search Route", query ? `Searching "${query}" along route.` : `Ask Maps is ready for ${activeLocation.name}.`, false);
+  };
+
+  const handleMobileAddReport = () => {
+    playClickSound();
+    setMobileNavMenuOpen(false);
+    setIncidentsActive(true);
+    triggerToast("Report Added", `Road report pinned near ${activeLocation.name}.`, false);
+  };
+
+  const handleMobileShareProgress = async () => {
+    setMobileNavMenuOpen(false);
+    const message = `SpiderMaps ride to ${activeLocation.name}: ${routeMeta?.distance || 'distance pending'}, ${routeMeta?.duration || 'ETA pending'}.`;
+    try {
+      if (navigator.share) {
+        await navigator.share({ title: 'SpiderMaps ride progress', text: message });
+      } else if (navigator.clipboard) {
+        await navigator.clipboard.writeText(message);
+      }
+      triggerToast("Ride Shared", "Ride progress shared/copied.", false);
+    } catch {
+      triggerToast("Share Ready", message, false);
+    }
+  };
+
+  const handleMobileDirectionsFromNav = () => {
+    playClickSound();
+    setMobileNavMenuOpen(false);
+    setMobileMode('route');
+    setMobileSheetOpen(true);
+  };
+
+  const handleMobileSatellite = () => {
+    playClickSound();
+    setMobileNavMenuOpen(false);
+    setMapStyle('satellite');
+    triggerToast("Satellite Map", "Satellite view enabled.", false);
   };
 
   const handleMapClick = (event) => {
@@ -1345,6 +1752,7 @@ export default function App() {
 
     setActiveLocation(droppedPlace);
     setMobileSheetOpen(true);
+    setMobileMode('place');
     if (spiderGridActive) {
       renderSpiderGrid(droppedPlace.coords);
     }
@@ -1366,6 +1774,23 @@ export default function App() {
     if (!searchQuery.trim()) return;
 
     playClickSound();
+    const destination = createSearchDestination();
+    if (routeSearchTarget) {
+      handleRouteSearchSelect(destination);
+      return;
+    }
+    setSearchQuery(destination.name);
+
+    if (leafletMapInstance.current) {
+      leafletMapInstance.current.flyTo({ center: toLngLat(destination.coords), zoom: 14, duration: 1200 });
+    }
+    setActiveLocation(destination);
+    setMobileSheetOpen(true);
+    setMobileMode('place');
+    if (spiderGridActive) {
+      renderSpiderGrid(destination.coords);
+    }
+    triggerToast("Address Found", `Displaying map results for "${destination.name}".`, false);
     const bestMatch = searchSuggestions[0];
 
     if (bestMatch) {
@@ -1390,6 +1815,7 @@ export default function App() {
       }
       setActiveLocation(simulatedLocation);
       setMobileSheetOpen(true);
+      setMobileMode('place');
       if (spiderGridActive) {
         renderSpiderGrid(simulatedLocation.coords);
       }
@@ -1514,6 +1940,10 @@ export default function App() {
     setTravelMode(modeId);
     const mode = TRAVEL_MODES.find((item) => item.id === modeId);
     triggerToast("Travel Mode", `${mode?.label || 'Route'} mode selected.`, false);
+    if (lastRouteEndpointsRef.current) {
+      const { start, end, label } = lastRouteEndpointsRef.current;
+      drawRouteBetween(start, end, label, modeId);
+    }
   };
 
   const getGpsPosition = () => new Promise((resolve, reject) => {
@@ -1563,7 +1993,7 @@ export default function App() {
     };
   };
 
-  const showUserLocation = ({ coords, address, accuracy }) => {
+  const showUserLocation = ({ coords, address, accuracy }, options = {}) => {
     const location = {
       name: accuracy === 'approx' ? "Approximate Location" : "Your Location",
       coords,
@@ -1584,7 +2014,9 @@ export default function App() {
       .addTo(leafletMapInstance.current);
     userLayerGroup.current.push(marker);
 
-    setActiveLocation(location);
+    if (options.select !== false) {
+      setActiveLocation(location);
+    }
     setRouteStartKey('gps');
     leafletMapInstance.current?.flyTo({ center: toLngLat(coords), zoom: accuracy === 'approx' ? 12 : 15, duration: 1000 });
     return location;
@@ -1902,15 +2334,21 @@ export default function App() {
         </div>
 
         {/* MOBILE MAP UI */}
+        {(mobileMode === 'place' || routeSearchTarget) && (
         <section className="absolute inset-x-3 top-[calc(env(safe-area-inset-top)+10px)] z-40 flex flex-col gap-2 pointer-events-none md:hidden">
           <form
             onSubmit={handleSearchSubmit}
             className="pointer-events-auto flex h-14 items-center gap-2 rounded-full bg-[#2f3033]/96 px-3 shadow-2xl backdrop-blur"
           >
+            {routeSearchTarget && (
+              <button type="button" onClick={() => { playClickSound(); setRouteSearchTarget(null); setMobileMode('route'); setMobileSheetOpen(true); }} className="grid h-10 w-10 shrink-0 place-items-center rounded-full text-slate-100" title="Back">
+                <ChevronLeft size={22} />
+              </button>
+            )}
             <Search size={22} className="shrink-0 text-slate-200" />
             <input
               type="text"
-              placeholder="Search here"
+              placeholder={routeSearchTarget === 'from' ? 'Search start location' : routeSearchTarget === 'to' ? 'Search destination' : 'Search here'}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="min-w-0 flex-1 bg-transparent text-base font-medium text-slate-100 placeholder:text-slate-300 focus:outline-none"
@@ -1930,9 +2368,13 @@ export default function App() {
                   key={suggestion.key}
                   type="button"
                   onClick={() => {
-                    playClickSound();
-                    setSearchQuery(suggestion.place.name);
-                    handleSelectLocation(suggestion.place);
+                    if (routeSearchTarget) {
+                      handleRouteSearchSelect(suggestion.place);
+                    } else {
+                      playClickSound();
+                      setSearchQuery(suggestion.place.name);
+                      handleSelectLocation(suggestion.place);
+                    }
                   }}
                   className="flex w-full items-center gap-3 px-4 py-3 text-left"
                 >
@@ -1948,12 +2390,13 @@ export default function App() {
             </div>
           )}
 
+          {!routeSearchTarget && (
           <div className="pointer-events-auto flex gap-2 overflow-x-auto pb-1 scrollbar-none mobile-chip-row">
             <button onClick={handleRecenter} className="flex shrink-0 items-center gap-2 rounded-full border border-[#60a5fa]/60 bg-[#2f3033]/96 px-4 py-2 text-sm font-bold text-slate-100 shadow-xl">
               <Compass size={16} />
               Ask Maps
             </button>
-            <button onClick={() => handleDrawRoute()} className="flex shrink-0 items-center gap-2 rounded-full bg-[#2f3033]/96 px-4 py-2 text-sm font-bold text-slate-100 shadow-xl">
+            <button onClick={handleMobileDirections} className="flex shrink-0 items-center gap-2 rounded-full bg-[#2f3033]/96 px-4 py-2 text-sm font-bold text-slate-100 shadow-xl">
               <Car size={16} />
               Directions
             </button>
@@ -1967,8 +2410,11 @@ export default function App() {
               Transit
             </button>
           </div>
+          )}
         </section>
+        )}
 
+        {mobileMode === 'place' && (
         <div className="absolute right-4 bottom-[calc(46svh+20px)] z-40 flex flex-col gap-3 pointer-events-auto md:hidden">
           <button onClick={() => { playClickSound(); setLayersMenuOpen(!layersMenuOpen); }} className="grid h-12 w-12 place-items-center rounded-2xl bg-[#005d63] text-cyan-100 shadow-2xl" aria-label="Map layers and style settings">
             <Layers size={22} />
@@ -1976,10 +2422,11 @@ export default function App() {
           <button onClick={handleGetUserLocation} className="grid h-12 w-12 place-items-center rounded-2xl bg-[#3b3b3b]/95 text-slate-100 shadow-2xl" title="Get your location">
             <Crosshair size={22} />
           </button>
-          <button onClick={handleDrawRoute} className="grid h-14 w-14 place-items-center rounded-2xl bg-[#67d9e8] text-[#062024] shadow-2xl" title="Directions">
+          <button onClick={handleMobileDirections} className="grid h-14 w-14 place-items-center rounded-2xl bg-[#67d9e8] text-[#062024] shadow-2xl" title="Directions">
             <Navigation size={24} />
           </button>
         </div>
+        )}
 
         {layersMenuOpen && (
           <div className="absolute right-4 bottom-[calc(46svh+11rem)] z-50 w-[190px] rounded-2xl border border-white/10 bg-[#191a1d]/96 p-3 text-xs text-slate-100 shadow-2xl backdrop-blur md:hidden">
@@ -2234,7 +2681,36 @@ export default function App() {
 
         </div>
 
-        {!mobileSheetOpen && (
+        {mobileMode === 'nav' && (
+          <MobileNavigationPanel
+            activeLocation={activeLocation}
+            routeMeta={routeMeta}
+            navTelemetry={navTelemetry}
+            soundEnabled={soundEnabled}
+            mapStyle={mapStyle}
+            incidentsActive={incidentsActive}
+            constructionActive={constructionActive}
+            spiderGridActive={spiderGridActive}
+            mobileNavMenuOpen={mobileNavMenuOpen}
+            mobileRecenterExpanded={mobileRecenterExpanded}
+            onExitNavigation={handleExitMobileNavigation}
+            onToggleRouteMenu={handleMobileRouteMenuToggle}
+            onCloseRouteMenu={() => setMobileNavMenuOpen(false)}
+            onToggleSound={toggleSound}
+            onRecenter={handleMobileNavRecenter}
+            onSearchAlongRoute={handleMobileSearchAlongRoute}
+            onAddReport={handleMobileAddReport}
+            onShareProgress={handleMobileShareProgress}
+            onDirections={handleMobileDirectionsFromNav}
+            onSatellite={handleMobileSatellite}
+            onMapStyleChange={(style) => { playClickSound(); setMapStyle(style); }}
+            onToggleIncidents={() => { playClickSound(); setIncidentsActive((value) => !value); }}
+            onToggleConstruction={() => { playClickSound(); setConstructionActive((value) => !value); }}
+            onToggleSpiderGrid={() => { playClickSound(); setSpiderGridActive((value) => !value); }}
+          />
+        )}
+
+        {mobileMode !== 'nav' && !mobileSheetOpen && !routeSearchTarget && (
           <button
             type="button"
             onClick={() => { playClickSound(); setMobileSheetOpen(true); }}
@@ -2246,97 +2722,164 @@ export default function App() {
         )}
 
         {/* MOBILE PLACE / ROUTE SHEET */}
-        {mobileSheetOpen && (
+        {mobileMode !== 'nav' && mobileSheetOpen && (
         <div className="fixed inset-x-0 bottom-0 z-50 max-h-[46svh] overflow-y-auto rounded-t-[28px] border-t border-white/10 bg-[#101113]/98 px-3 pb-[calc(env(safe-area-inset-bottom)+12px)] pt-2 shadow-[0_-24px_70px_rgba(0,0,0,0.5)] backdrop-blur md:hidden pointer-events-auto mobile-bottom-sheet">
           <div className="mx-auto mb-3 h-1 w-11 rounded-full bg-white/25" />
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0 flex-1">
-              <h2 className="truncate text-xl font-semibold leading-tight text-slate-50">{activeLocation.name}</h2>
-              <p className="mt-1 truncate text-sm text-slate-400">{activeLocation.address}</p>
-              <div className="mt-1 flex min-w-0 items-center gap-2 text-sm text-slate-300">
-                <span>{activeLocation.temp}</span>
-                <CloudSun size={15} className="text-amber-300" />
-                <span className="truncate text-slate-500">1 min nearby</span>
+
+          {mobileMode === 'place' && (
+            <>
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <h2 className="truncate text-xl font-semibold leading-tight text-slate-50">{activeLocation.name}</h2>
+                  <p className="mt-1 truncate text-sm text-slate-400">{activeLocation.address}</p>
+                  <div className="mt-1 flex min-w-0 items-center gap-2 text-sm text-slate-300">
+                    <span>{activeLocation.temp}</span>
+                    <CloudSun size={15} className="text-amber-300" />
+                    <span className="truncate text-slate-500">1 min nearby</span>
+                  </div>
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  <button onClick={handleSaveLocation} className="mobile-circle-button" title="Save">
+                    <Bookmark size={20} />
+                  </button>
+                  <button onClick={handleShareLocation} className="mobile-circle-button" title="Share">
+                    <Share2 size={20} />
+                  </button>
+                  <button onClick={handleCloseMobileSheet} className="mobile-circle-button" title="Close panel">
+                    <X size={22} />
+                  </button>
+                </div>
+              </div>
+
+              <div className="mt-4 flex gap-2 overflow-x-auto pb-1 scrollbar-none">
+                <button onClick={handleMobileDirections} className="mobile-primary-pill">
+                  <Route size={20} />
+                  Directions
+                </button>
+                <button onClick={handleMobileStart} className="mobile-secondary-pill">
+                  <Navigation size={19} />
+                  Start
+                </button>
+                <button onClick={handleMobileAsk} className="mobile-secondary-pill">
+                  <Search size={18} />
+                  Ask
+                </button>
+                <button onClick={handleSaveLocation} className="mobile-secondary-pill">
+                  <Bookmark size={18} />
+                  Save
+                </button>
+              </div>
+            </>
+          )}
+
+          {mobileMode === 'ask' && (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-xl font-semibold text-slate-50">Ask Maps</h2>
+                  <p className="mt-1 text-sm text-slate-400">Ask about {activeLocation.name}</p>
+                </div>
+                <button onClick={() => setMobileMode('place')} className="mobile-circle-button" title="Close ask">
+                  <X size={22} />
+                </button>
+              </div>
+              <div className="rounded-2xl border border-white/10 bg-black/35 p-3 text-sm text-slate-300">
+                Try: nearby food, fastest route, save this place, or road hazards.
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                {['Nearby food', 'Road hazards', 'Fastest route', 'Save place'].map((label) => (
+                  <button key={label} type="button" onClick={() => triggerToast('Ask Maps', `${label} around ${activeLocation.name}.`, false)} className="rounded-2xl bg-white/8 px-3 py-3 text-sm font-bold text-slate-100">
+                    {label}
+                  </button>
+                ))}
               </div>
             </div>
-            <div className="flex shrink-0 items-center gap-2">
-              <button onClick={handleSaveLocation} className="mobile-circle-button" title="Save">
-                <Bookmark size={20} />
-              </button>
-              <button onClick={handleShareLocation} className="mobile-circle-button" title="Share">
-                <Share2 size={20} />
-              </button>
-              <button onClick={handleCloseMobileSheet} className="mobile-circle-button" title="Close panel">
-                <X size={22} />
-              </button>
-            </div>
-          </div>
+          )}
 
-          <div className="mt-4 flex gap-2 overflow-x-auto pb-1 scrollbar-none">
-            <button onClick={handleDrawRoute} className="mobile-primary-pill">
-              <Route size={20} />
-              Directions
-            </button>
-            <button onClick={handleDrawRoute} className="mobile-secondary-pill">
-              <Navigation size={19} />
-              Start
-            </button>
-            <button onClick={handleNearbySearch} className="mobile-secondary-pill">
-              <Search size={18} />
-              Ask
-            </button>
-            <button onClick={handleSaveLocation} className="mobile-secondary-pill">
-              <Bookmark size={18} />
-              Save
-            </button>
-          </div>
+          {mobileMode === 'route' && (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <h2 className="truncate text-xl font-semibold text-slate-50">Route to {activeLocation.name}</h2>
+                  <p className="mt-1 truncate text-sm text-slate-400">{activeLocation.address}</p>
+                </div>
+                <button onClick={() => setMobileMode('place')} className="mobile-circle-button" title="Close route setup">
+                  <X size={22} />
+                </button>
+              </div>
 
-          <div className="mt-3 grid grid-cols-5 gap-1.5 border-t border-white/10 pt-3">
-            {TRAVEL_MODES.map((mode) => (
-              <button
-                key={mode.id}
-                type="button"
-                onClick={() => handleTravelModeChange(mode.id)}
-                className={`mobile-travel-button ${travelMode === mode.id ? 'active' : ''}`}
-                title={mode.label}
-              >
-                {renderTravelModeIcon(mode.id, 18)}
-                <span>{mode.label}</span>
-              </button>
-            ))}
-          </div>
+              <div className="rounded-2xl border border-white/10 bg-black/35 p-3">
+                <div className="space-y-3">
+                  <div className="grid grid-cols-[auto_1fr_auto] items-center gap-3">
+                  <span className="h-3 w-3 rounded-full bg-blue-400" />
+                  <button
+                    type="button"
+                    onClick={() => openRouteSearch('from')}
+                    className="min-w-0 rounded-xl border border-white/10 bg-[#07090d] px-3 py-2 text-left text-sm font-semibold text-white"
+                  >
+                    <span className="block text-[10px] uppercase tracking-wide text-slate-500">From</span>
+                    <span className="block truncate">{routeFromQuery || 'Choose start'}</span>
+                  </button>
+                  <button type="button" onClick={useGpsRouteStart} className="rounded-xl bg-cyan-400/15 px-3 py-2 text-xs font-bold text-cyan-200">GPS</button>
+                  <span className="h-3 w-3 rounded-full bg-rose-400" />
+                  <button
+                    type="button"
+                    onClick={() => openRouteSearch('to')}
+                    className="min-w-0 rounded-xl border border-white/10 bg-[#07090d] px-3 py-2 text-left text-sm font-semibold text-white"
+                  >
+                    <span className="block text-[10px] uppercase tracking-wide text-slate-500">To</span>
+                    <span className="block truncate">{routeToQuery || activeLocation.name || 'Choose destination'}</span>
+                  </button>
+                  <button type="button" onClick={() => openRouteSearch('to')} className="rounded-xl bg-cyan-400/15 px-3 py-2 text-xs font-bold text-cyan-200">Search</button>
+                  </div>
+                </div>
+              </div>
 
-          <div className="mt-3 grid grid-cols-[auto_1fr] items-center gap-2 rounded-2xl border border-white/10 bg-black/35 px-3 py-2">
-            <span className="text-[10px] font-bold uppercase tracking-wide text-slate-400">From</span>
-            <select
-              value={routeStartKey}
-              onChange={(event) => { playClickSound(); setRouteStartKey(event.target.value); }}
-              className="min-w-0 rounded-xl border border-white/10 bg-[#07090d] px-3 py-2 text-sm font-semibold text-white outline-none"
-            >
-              <option value="gps">My GPS location</option>
-              {savedPlaces.map((place) => (
-                <option key={place.id} value={place.id}>{place.name}</option>
-              ))}
-            </select>
-          </div>
+              <div className="grid grid-cols-5 gap-1.5">
+                {TRAVEL_MODES.map((mode) => (
+                  <button
+                    key={mode.id}
+                    type="button"
+                    onClick={() => handleTravelModeChange(mode.id)}
+                    className={`mobile-travel-button ${travelMode === mode.id ? 'active' : ''}`}
+                    title={mode.label}
+                  >
+                    {renderTravelModeIcon(mode.id, 18)}
+                    <span>{mode.label}</span>
+                  </button>
+                ))}
+              </div>
 
-          <div className="mt-3 grid grid-cols-3 gap-2">
-            <div className="route-stat">
-              <Navigation size={14} />
-              <span>{routeMeta?.distance || "--"}</span>
-              <small>Distance</small>
+              <div className="grid grid-cols-3 gap-2">
+                <div className="route-stat">
+                  <Navigation size={14} />
+                  <span>{routeMeta?.distance || "--"}</span>
+                  <small>Distance</small>
+                </div>
+                <div className="route-stat">
+                  <Clock size={14} />
+                  <span>{routeMeta?.duration || "--"}</span>
+                  <small>Duration</small>
+                </div>
+                <div className="route-stat">
+                  <Fuel size={14} />
+                  <span>{routeMeta?.fuel || "--"}</span>
+                  <small>Fuel</small>
+                </div>
+              </div>
+
+              <div className="flex gap-2">
+                <button onClick={handleMobileStart} className="mobile-primary-pill flex-1">
+                  <Navigation size={19} />
+                  Start
+                </button>
+                <button onClick={handleMobileDirections} className="mobile-secondary-pill flex-1">
+                  <Route size={19} />
+                  Refresh
+                </button>
+              </div>
             </div>
-            <div className="route-stat">
-              <Clock size={14} />
-              <span>{routeMeta?.duration || "--"}</span>
-              <small>Duration</small>
-            </div>
-            <div className="route-stat">
-              <Fuel size={14} />
-              <span>{routeMeta?.fuel || "--"}</span>
-              <small>Fuel</small>
-            </div>
-          </div>
+          )}
         </div>
         )}
 
