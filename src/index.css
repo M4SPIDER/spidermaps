@@ -25,6 +25,14 @@ body {
   font-family: Roboto, "Noto Sans Devanagari UI", "Noto Sans Bengali UI", "Noto Sans Telugu UI", "Noto Sans Tamil UI", "Noto Sans Gujarati UI", "Noto Sans Kannada UI", "Noto Sans Malayalam UI", "Noto Sans Gurmukhi UI", Arial, sans-serif;
 }
 
+.scrollbar-none {
+  scrollbar-width: none;
+}
+
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+
 .leaflet-control-attribution,
 .maplibregl-ctrl-attrib {
   display: none !important;
@@ -219,7 +227,7 @@ body {
 .map-action-button {
   display: flex;
   min-width: 0;
-  height: 58px;
+  height: 50px;
   flex-direction: column;
   align-items: center;
   justify-content: center;
@@ -228,7 +236,7 @@ body {
   border: 1px solid rgb(6 182 212 / 0.24);
   background: rgb(6 182 212 / 0.08);
   color: #22d3ee;
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 800;
   transition: border-color 160ms ease, background 160ms ease, color 160ms ease;
 }
@@ -237,6 +245,58 @@ body {
   border-color: rgb(6 182 212 / 0.72);
   background: rgb(6 182 212 / 0.16);
   color: #f8fafc;
+}
+
+.mobile-chip-row {
+  mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 28px), transparent);
+}
+
+.mobile-circle-button {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  place-items: center;
+  border-radius: 999px;
+  background: rgb(47 48 51 / 0.96);
+  color: #e5e7eb;
+  transition: background 160ms ease, color 160ms ease, transform 160ms ease;
+}
+
+.mobile-bottom-sheet {
+  scrollbar-width: none;
+}
+
+.mobile-bottom-sheet::-webkit-scrollbar {
+  display: none;
+}
+
+.mobile-circle-button:active {
+  transform: scale(0.96);
+}
+
+.mobile-primary-pill,
+.mobile-secondary-pill {
+  display: inline-flex;
+  min-width: max-content;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  border-radius: 999px;
+  padding: 10px 14px;
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.mobile-primary-pill {
+  background: #67d9e8;
+  color: #082025;
+}
+
+.mobile-secondary-pill {
+  background: #005d63;
+  color: #d8fbff;
 }
 
 .travel-mode-button,
@@ -260,11 +320,22 @@ body {
 }
 
 .mobile-travel-button {
-  height: 46px;
+  height: 48px;
   flex-direction: column;
-  border-radius: 12px;
+  border-radius: 16px;
   font-size: 9px;
   line-height: 1;
+}
+
+@media (min-width: 768px) {
+  .map-action-button {
+    height: 58px;
+    font-size: 10px;
+  }
+
+  .mobile-travel-button {
+    height: 46px;
+  }
 }
 
 .travel-mode-button span,
