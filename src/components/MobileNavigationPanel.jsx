@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
+  Compass,
   Crosshair,
   Layers,
   Map as MapIcon,
@@ -17,11 +18,8 @@ export default function MobileNavigationPanel({
   activeLocation,
   routeMeta,
   navTelemetry,
+  speedUnit,
   soundEnabled,
-  mapStyle,
-  incidentsActive,
-  constructionActive,
-  spiderGridActive,
   mobileNavMenuOpen,
   mobileRecenterExpanded,
   onExitNavigation,
@@ -32,12 +30,8 @@ export default function MobileNavigationPanel({
   onSearchAlongRoute,
   onAddReport,
   onShareProgress,
-  onDirections,
   onSatellite,
-  onMapStyleChange,
-  onToggleIncidents,
-  onToggleConstruction,
-  onToggleSpiderGrid
+  onOpenSettings,
 }) {
   const [activePanel, setActivePanel] = useState(null);
   const [routeSearchQuery, setRouteSearchQuery] = useState('');
@@ -60,8 +54,8 @@ export default function MobileNavigationPanel({
     setActivePanel(null);
   };
 
-  const openSettings = () => {
-    setActivePanel((panel) => (panel === 'settings' ? null : 'settings'));
+  const openDirections = () => {
+    setActivePanel((panel) => (panel === 'directions' ? null : 'directions'));
     onCloseRouteMenu();
   };
 
@@ -69,10 +63,20 @@ export default function MobileNavigationPanel({
     { label: 'Add a report', icon: <AlertTriangle size={24} />, action: onAddReport },
     { label: 'Share ride progress', icon: <Share2 size={24} />, action: onShareProgress },
     { label: 'Search along route', icon: <Search size={24} />, action: openSearch },
-    { label: 'Directions', icon: <Route size={24} />, action: onDirections },
+    { label: 'Directions', icon: <Route size={24} />, action: openDirections },
     { label: 'Show satellite map', icon: <MapIcon size={24} />, action: onSatellite },
-    { label: 'Settings', icon: <Layers size={24} />, action: openSettings }
+    { label: 'Settings', icon: <Layers size={24} />, action: onOpenSettings }
   ];
+  const speedValue = speedUnit === 'mph'
+    ? Math.round((navTelemetry?.speedKmh || 0) * 0.621371)
+    : Math.round(navTelemetry?.speedKmh || 0);
+  const coveredValue = speedUnit === 'mph'
+    ? `${((navTelemetry?.coveredKm || 0) * 0.621371).toFixed(2)} mi`
+    : `${(navTelemetry?.coveredKm || 0).toFixed(2)} km`;
+  const formatStepDistance = (meters = 0) => {
+    if (meters >= 1000) return `${(meters / 1000).toFixed(1)} km`;
+    return `${Math.max(10, Math.round(meters / 10) * 10)} m`;
+  };
 
   return (
     <>
@@ -99,8 +103,8 @@ export default function MobileNavigationPanel({
 
       <div className="fixed right-4 top-[42vh] z-50 flex flex-col gap-3 md:hidden">
         {!mobileRecenterExpanded && (
-          <button type="button" onClick={onRecenter} className="grid h-12 w-12 place-items-center rounded-full bg-black/90 text-white shadow-2xl" title="Recenter">
-            <Crosshair size={22} />
+          <button type="button" onClick={onRecenter} className="grid h-12 w-12 place-items-center rounded-full bg-black/90 text-white shadow-2xl" title="Compass / re-centre">
+            <Compass size={22} />
           </button>
         )}
         <button type="button" onClick={openSearch} className="grid h-12 w-12 place-items-center rounded-full bg-black/90 text-white shadow-2xl" title="Search along route">
@@ -116,9 +120,9 @@ export default function MobileNavigationPanel({
 
       {!mobileRecenterExpanded && (
       <div className="fixed bottom-[132px] left-4 z-50 rounded-full bg-black/90 px-4 py-3 text-center text-white shadow-2xl md:hidden">
-        <div className="text-lg font-bold leading-none">{Math.round(navTelemetry?.speedKmh || 0)}</div>
-        <div className="text-[10px] font-semibold text-slate-300">km/h</div>
-        <div className="mt-1 text-[10px] text-slate-400">{(navTelemetry?.coveredKm || 0).toFixed(2)} km</div>
+        <div className="text-lg font-bold leading-none">{speedValue}</div>
+        <div className="text-[10px] font-semibold text-slate-300">{speedUnit === 'mph' ? 'mph' : 'km/h'}</div>
+        <div className="mt-1 text-[10px] text-slate-400">{coveredValue}</div>
       </div>
       )}
 
@@ -154,46 +158,29 @@ export default function MobileNavigationPanel({
         </form>
       )}
 
-      {activePanel === 'settings' && (
-        <div className="fixed inset-x-3 bottom-[96px] z-[60] rounded-3xl bg-[#101010]/98 p-4 text-slate-200 shadow-[0_-24px_70px_rgba(0,0,0,0.58)] md:hidden">
-          <div className="mb-3 flex items-center justify-between">
-            <h3 className="text-base font-bold text-white">Navigation settings</h3>
-            <button type="button" onClick={() => setActivePanel(null)} className="grid h-9 w-9 place-items-center rounded-full bg-white/10 text-white" title="Close settings">
+      {activePanel === 'directions' && (
+        <div className="fixed inset-x-3 bottom-[96px] top-[calc(env(safe-area-inset-top)+86px)] z-[60] overflow-hidden rounded-3xl bg-[#101010]/98 text-white shadow-[0_-24px_70px_rgba(0,0,0,0.58)] md:hidden">
+          <div className="flex items-center justify-between border-b border-white/10 px-4 py-3">
+            <div className="min-w-0">
+              <h3 className="truncate text-base font-bold">Directions</h3>
+              <p className="truncate text-xs text-slate-400">{routeMeta?.routeSummary || 'Current route'}</p>
+            </div>
+            <button type="button" onClick={() => setActivePanel(null)} className="grid h-9 w-9 place-items-center rounded-full bg-white/10 text-white" title="Close directions">
               <X size={20} />
             </button>
           </div>
-
-          <div className="grid grid-cols-2 gap-2">
-            {[
-              ['dark', 'Dark'],
-              ['normal', 'Normal'],
-              ['light', 'Light'],
-              ['satellite', 'Satellite']
-            ].map(([id, label]) => (
-              <button
-                key={id}
-                type="button"
-                onClick={() => onMapStyleChange(id)}
-                className={`rounded-2xl border px-3 py-3 text-left text-sm font-bold ${mapStyle === id ? 'border-cyan-300 bg-cyan-400/15 text-cyan-200' : 'border-white/10 bg-white/5 text-slate-200'}`}
-              >
-                {label}
-              </button>
+          <div className="max-h-full overflow-y-auto px-4 py-3 pb-20">
+            {(routeMeta?.steps?.length ? routeMeta.steps : [{ instruction: routeMeta?.instruction || 'Continue on route', distance: 0 }]).map((step, index) => (
+              <div key={`${step.instruction}-${index}`} className="flex gap-3 border-b border-white/10 py-3 last:border-b-0">
+                <div className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-cyan-400/12 text-cyan-300">
+                  <Route size={18} />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="text-sm font-semibold text-slate-100">{step.instruction}</div>
+                  <div className="mt-1 text-xs text-slate-500">{formatStepDistance(step.distance)}</div>
+                </div>
+              </div>
             ))}
-          </div>
-
-          <div className="mt-4 space-y-3 border-t border-white/10 pt-4">
-            <label className="flex items-center justify-between gap-4 text-sm font-semibold text-slate-200">
-              <span>Traffic incidents</span>
-              <input type="checkbox" checked={incidentsActive} onChange={onToggleIncidents} className="h-5 w-5 accent-cyan-400" />
-            </label>
-            <label className="flex items-center justify-between gap-4 text-sm font-semibold text-slate-200">
-              <span>Hyderabad hazards</span>
-              <input type="checkbox" checked={constructionActive} onChange={onToggleConstruction} className="h-5 w-5 accent-orange-400" />
-            </label>
-            <label className="flex items-center justify-between gap-4 text-sm font-semibold text-slate-200">
-              <span>Spider grid</span>
-              <input type="checkbox" checked={spiderGridActive} onChange={onToggleSpiderGrid} className="h-5 w-5 accent-cyan-400" />
-            </label>
           </div>
         </div>
       )}
@@ -211,8 +198,9 @@ export default function MobileNavigationPanel({
               <div className="mt-0.5 truncate text-[11px] text-slate-500">{routeMeta.routeSummary}</div>
             )}
           </div>
-          <button type="button" onClick={onToggleRouteMenu} className="grid h-14 w-14 shrink-0 place-items-center rounded-full border border-white/25 text-white" title="Route options">
-            <Route size={26} />
+          <button type="button" onClick={onToggleRouteMenu} className="flex h-14 shrink-0 items-center gap-2 rounded-full border border-white/25 px-4 text-sm font-bold text-white" title="Route options">
+            <Route size={22} />
+            Options
           </button>
         </div>
       </div>
