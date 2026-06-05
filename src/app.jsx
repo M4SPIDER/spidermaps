@@ -180,6 +180,21 @@ const SEARCH_ALIASES = {
 const PUBLIC_SEARCH_PLACE_KEYS = [];
 const EXACT_LOCAL_SEARCH_KEYS = [];
 
+const VERIFIED_SEARCH_FALLBACKS = [
+  {
+    key: 'verified-dmart-kompally',
+    match: /\b(dmart|d\s*mart|d-mart)\b.*\b(kompally|medchal)\b|\b(kompally|medchal)\b.*\b(dmart|d\s*mart|d-mart)\b/i,
+    place: {
+      name: 'D-Mart Kompally',
+      coords: [17.5211523, 78.4830582],
+      address: 'Medchal Rd, near RR Multispeciality Hospital, Caton Residential Twp, Kompally, Telangana 500067',
+      temp: '--',
+      traffic: 'Verified local supermarket result',
+      type: 'supermarket'
+    }
+  }
+];
+
 const TRAVEL_MODES = [
   { id: 'car', label: 'Car', osrmProfile: 'driving', fuelKmPerLiter: 16, speedFallbackKmh: 34 },
   { id: 'bike', label: 'Bike', osrmProfile: 'driving', fuelKmPerLiter: 40, speedFallbackKmh: 32 },
@@ -397,6 +412,9 @@ const SEARCH_TYPE_ALIASES = {
   restaurant: 'restaurants restaurant food dining cafe',
   cafe: 'restaurants cafe food coffee',
   fast_food: 'restaurants fast food dining',
+  supermarket: 'supermarket grocery dmart d mart store shop mart',
+  convenience: 'convenience store shop mart',
+  department_store: 'department store shop mart',
   hotel: 'hotels hotel lodge stay',
   hostel: 'hostels hostel lodge stay',
   guest_house: 'hotels guest house lodge stay',
@@ -987,7 +1005,17 @@ export default function App() {
           .filter((item) => item.score >= 70)
       : [];
 
+    const verifiedFallbackSuggestions = VERIFIED_SEARCH_FALLBACKS
+      .filter((item) => item.match.test(searchQuery))
+      .map((item) => ({
+        key: item.key,
+        source: 'verified',
+        score: 240,
+        place: item.place
+      }));
+
     const primarySearchWords = getPrimarySearchWords(searchQuery);
+    const localRankCenter = searchCenterOverride || (isHyderabadPoiQuery(searchQuery) ? getSearchCenterForQuery(searchQuery) : null);
     const scoredGlobal = globalSuggestions
       .map((item) => {
         const typeAliases = SEARCH_TYPE_ALIASES[item.place.type] || '';
@@ -997,18 +1025,18 @@ export default function App() {
           const aliases = SEARCH_BRAND_ALIASES[word] || [word];
           return aliases.some((alias) => normalizedText.includes(normalizeSearchText(alias)));
         }).length;
-        const branchMatchBonus = primaryHits > 0 ? 22 + primaryHits * 10 : 0;
-        const distanceMeters = searchCenterOverride ? getDistanceMeters(searchCenterOverride, item.place.coords) : null;
-        const nearbyBonus = Number.isFinite(distanceMeters) ? Math.max(0, 34 - (distanceMeters / 1000) * 5) : 0;
+        const brandMatchBonus = primaryHits > 0 ? 58 + primaryHits * 12 : 0;
+        const distanceMeters = localRankCenter ? getDistanceMeters(localRankCenter, item.place.coords) : null;
+        const nearbyBonus = Number.isFinite(distanceMeters) ? Math.max(0, 38 - (distanceMeters / 1000) * 4) : 0;
         return {
           ...item,
           distanceMeters,
-          score: getSearchScore(searchQuery, text) + branchMatchBonus + nearbyBonus
+          score: getSearchScore(searchQuery, text) + brandMatchBonus + nearbyBonus
         };
       })
-      .filter((item) => item.score >= (primarySearchWords.length ? 38 : 45));
+      .filter((item) => item.score >= (primarySearchWords.length ? 34 : 45));
 
-    return [...exactLocalSuggestions, ...localSuggestions, ...scoredGlobal]
+    return [...verifiedFallbackSuggestions, ...exactLocalSuggestions, ...localSuggestions, ...scoredGlobal]
       .sort((a, b) => (b.score - a.score) || (a.source === 'local' ? -1 : 1))
       .slice(0, 7);
   }, [exactLocalSearchPlaces, globalSuggestions, searchCenterOverride, searchQuery, searchablePlaces]);
@@ -1040,7 +1068,8 @@ export default function App() {
       setGlobalSearchLoading(true);
       try {
         const localQueryHint = isHyderabadPoiQuery(searchQuery);
-        const searchCenter = searchCenterOverride || null;
+        const searchCenter = searchCenterOverride
+          || (/\bnear me\b/i.test(searchQuery) && lastUserLocation?.coords ? lastUserLocation.coords : null);
         const [searchLat, searchLng] = searchCenter || getSearchCenterForQuery(searchQuery);
         const photonUrl = localQueryHint
           ? `https://photon.komoot.io/api/?q=${encodeURIComponent(searchCenter ? cleanedQuery : `${cleanedQuery} Telangana India`)}&limit=8&lang=en&lat=${searchLat}&lon=${searchLng}`
@@ -1074,6 +1103,14 @@ export default function App() {
           ? overpassResult.value.elements
           : [];
 
+        const maxNearbyDistance = searchCenter
+          ? (/\b(transit|bus|metro|station)\b/i.test(searchQuery) ? 12000 : 9000)
+          : null;
+        const isNearbyResult = (place) => (
+          !searchCenter
+          || getDistanceMeters(searchCenter, place.coords) <= maxNearbyDistance
+        );
+
         const photonSuggestions = photonFeatures
           .map((feature, index) => {
               const [lng, lat] = feature.geometry?.coordinates || [];
@@ -1095,6 +1132,7 @@ export default function App() {
                 }
               };
             })
+          .filter((suggestion) => suggestion && isNearbyResult(suggestion.place))
           .filter(Boolean);
 
         const nominatimSuggestions = nominatimFeatures
@@ -1118,6 +1156,7 @@ export default function App() {
               }
             };
           })
+          .filter((suggestion) => suggestion && isNearbyResult(suggestion.place))
           .filter(Boolean);
 
         const overpassSuggestions = overpassElements
@@ -1149,16 +1188,32 @@ export default function App() {
               }
             };
           })
+          .filter((suggestion) => suggestion && isNearbyResult(suggestion.place))
           .filter(Boolean);
 
         const seen = new Set();
+        const primarySearchWords = getPrimarySearchWords(searchQuery);
+        const searchRankCenter = searchCenter || (localQueryHint ? getSearchCenterForQuery(searchQuery) : null);
+        const rankProviderSuggestion = (suggestion) => {
+          const typeAliases = SEARCH_TYPE_ALIASES[suggestion.place.type] || '';
+          const text = normalizeSearchText(`${suggestion.place.name} ${suggestion.place.address} ${suggestion.place.type || ''} ${typeAliases}`);
+          const primaryHits = primarySearchWords.filter((word) => {
+            const aliases = SEARCH_BRAND_ALIASES[word] || [word];
+            return aliases.some((alias) => text.includes(normalizeSearchText(alias)));
+          }).length;
+          const distanceMeters = searchRankCenter ? getDistanceMeters(searchRankCenter, suggestion.place.coords) : null;
+          const nearbyScore = Number.isFinite(distanceMeters) ? Math.max(0, 28 - (distanceMeters / 1000) * 3) : 0;
+          return (primaryHits * 100) + nearbyScore + (suggestion.source === 'overpass' ? 12 : 0) + (suggestion.score || 0);
+        };
         setGlobalSuggestions(
-          [...overpassSuggestions, ...photonSuggestions, ...nominatimSuggestions].filter((suggestion) => {
-            const key = `${normalizeSearchText(suggestion.place.name)}-${suggestion.place.coords.map((value) => value.toFixed(3)).join(',')}`;
-            if (seen.has(key)) return false;
-            seen.add(key);
-            return true;
-          })
+          [...overpassSuggestions, ...photonSuggestions, ...nominatimSuggestions]
+            .filter((suggestion) => {
+              const key = `${normalizeSearchText(suggestion.place.name)}-${suggestion.place.coords.map((value) => value.toFixed(3)).join(',')}`;
+              if (seen.has(key)) return false;
+              seen.add(key);
+              return true;
+            })
+            .sort((a, b) => rankProviderSuggestion(b) - rankProviderSuggestion(a))
         );
       } catch (error) {
         if (error.name !== 'AbortError') {
@@ -1175,7 +1230,7 @@ export default function App() {
       controller.abort();
       clearTimeout(timer);
     };
-  }, [searchCenterOverride, searchQuery]);
+  }, [lastUserLocation?.coords, searchCenterOverride, searchQuery]);
 
   useEffect(() => {
     let cancelled = false;
