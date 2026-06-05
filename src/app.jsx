@@ -405,6 +405,24 @@ const getSearchScore = (query, text) => {
 
 const toLngLat = ([lat, lng]) => [lng, lat];
 
+const spiderMarkerSvg = (className = '') => `
+  <svg class="spider-marker-svg ${className}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    <polygon points="12 4, 15 7, 15 15, 12 18, 9 15, 9 7" fill="currentColor" fill-opacity="0.15" />
+    <circle cx="12" cy="12" r="3.5" fill="currentColor" fill-opacity="0.1" />
+    <path d="M12 4 L12 18" stroke-width="1" stroke-dasharray="2 2" opacity="0.7" />
+    <path d="M9 7 L3 1 L1 4" />
+    <path d="M9 10 L2 5 L0 9" />
+    <path d="M15 7 L21 1 L23 4" />
+    <path d="M15 10 L22 5 L24 9" />
+    <path d="M9 15 L3 23 L1 20" />
+    <path d="M9 12 L2 17 L0 13" />
+    <path d="M15 15 L21 23 L23 20" />
+    <path d="M15 12 L22 17 L24 13" />
+    <circle cx="10.5" cy="5.5" r="0.5" fill="currentColor" />
+    <circle cx="13.5" cy="5.5" r="0.5" fill="currentColor" />
+  </svg>
+`;
+
 const getDistanceMeters = (a, b) => {
   const [lat1, lng1] = a;
   const [lat2, lng2] = b;
@@ -415,6 +433,16 @@ const getDistanceMeters = (a, b) => {
   const rLat2 = (lat2 * Math.PI) / 180;
   const h = Math.sin(dLat / 2) ** 2 + Math.cos(rLat1) * Math.cos(rLat2) * Math.sin(dLng / 2) ** 2;
   return 2 * earthRadius * Math.asin(Math.sqrt(h));
+};
+
+const getBearingDegrees = (from, to) => {
+  if (!from || !to) return 0;
+  const [lat1, lng1] = from.map((value) => (value * Math.PI) / 180);
+  const [lat2, lng2] = to.map((value) => (value * Math.PI) / 180);
+  const dLng = lng2 - lng1;
+  const y = Math.sin(dLng) * Math.cos(lat2);
+  const x = Math.cos(lat1) * Math.sin(lat2) - Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLng);
+  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
 };
 
 const formatRouteInstruction = (step) => {
@@ -687,7 +715,7 @@ export default function App() {
   const [routeMeta, setRouteMeta] = useState(null);
   const [routeAlternatives, setRouteAlternatives] = useState([]);
   const [selectedRouteId, setSelectedRouteId] = useState(null);
-  const [navTelemetry, setNavTelemetry] = useState({ speedKmh: 0, coveredKm: 0 });
+  const [navTelemetry, setNavTelemetry] = useState({ speedKmh: 0, coveredKm: 0, heading: 0, accuracy: null });
   const [mobileSheetOpen, setMobileSheetOpen] = useState(true);
   const [mobileMode, setMobileMode] = useState('place');
   const [mobileNavMenuOpen, setMobileNavMenuOpen] = useState(false);
@@ -707,14 +735,40 @@ export default function App() {
   const constructionLayerGroup = useRef([]);
   const userLayerGroup = useRef([]);
   const alternativeRouteMarkersGroup = useRef([]);
+  const routeEndpointMarkersGroup = useRef([]);
   const routeLineCoordinatesRef = useRef([]);
   const lastRouteEndpointsRef = useRef(null);
-  const navTelemetryRef = useRef({ lastCoords: null, coveredMeters: 0 });
+  const navTelemetryRef = useRef({ lastCoords: null, coveredMeters: 0, heading: 0 });
   const navRerouteRef = useRef({ lastRerouteAt: 0, offRouteHits: 0, currentStepIndex: 0 });
   const activeBaseStyleRef = useRef(mapStyle);
   const audioCtxRef = useRef(null);
   const hazardWatchIdRef = useRef(null);
   const warnedHazardsRef = useRef(new Set());
+
+  const clearSearchState = () => {
+    setSearchQuery('');
+    setGlobalSuggestions([]);
+    setGlobalSearchLoading(false);
+  };
+
+  const renderUserLocationMarker = (coords, { label = 'Your Location', heading = 0, variant = '' } = {}) => {
+    const map = leafletMapInstance.current;
+    if (!map || !coords) return;
+
+    userLayerGroup.current.forEach((marker) => marker.remove());
+    userLayerGroup.current = [];
+
+    const userIcon = document.createElement('div');
+    userIcon.className = `gps-marker spider-gps-marker ${variant}`.trim();
+    userIcon.style.setProperty('--gps-heading', `${Math.round(heading || 0)}deg`);
+    userIcon.innerHTML = spiderMarkerSvg('spider-marker-core');
+
+    const marker = new maplibregl.Marker({ element: userIcon, anchor: 'center' })
+      .setLngLat(toLngLat(coords))
+      .setPopup(new maplibregl.Popup({ offset: 18 }).setText(label))
+      .addTo(map);
+    userLayerGroup.current.push(marker);
+  };
 
   const searchablePlaces = useMemo(() => (
     [
@@ -967,6 +1021,10 @@ export default function App() {
           renderMarkers();
           renderAlternativeRoutes(routeAlternatives.filter((route) => route.id !== selectedRouteId));
           renderRouteLine(routeLineCoordinatesRef.current);
+          if (lastRouteEndpointsRef.current) {
+            const { start, end, startLabel, label } = lastRouteEndpointsRef.current;
+            renderRouteEndpointMarkers(routeLineCoordinatesRef.current[0] || start, routeLineCoordinatesRef.current.at(-1) || end, startLabel, label);
+          }
           if (incidentsActive && routeActive) renderIncidents();
           if (constructionActive && routeActive) renderConstructionZones();
           if (spiderGridActive) renderSpiderGrid(activeLocation.coords);
@@ -1002,10 +1060,46 @@ export default function App() {
     if (map.getSource(id)) map.removeSource(id);
   };
 
+  const clearRouteLine = () => {
+    clearMapLibreLayer('route-line-casing');
+    clearMapLibreLayer('route-line');
+  };
+
+  const clearRouteEndpointMarkers = () => {
+    routeEndpointMarkersGroup.current.forEach((marker) => marker.remove());
+    routeEndpointMarkersGroup.current = [];
+  };
+
+  const renderRouteEndpointMarkers = (start, end, startLabel = 'Start', endLabel = 'Destination') => {
+    const map = leafletMapInstance.current;
+    if (!map || !start || !end) return;
+    clearRouteEndpointMarkers();
+
+    const startEl = document.createElement('div');
+    startEl.className = 'route-endpoint-marker route-start-marker';
+    startEl.title = startLabel;
+    startEl.innerHTML = spiderMarkerSvg('spider-marker-core');
+    const startMarker = new maplibregl.Marker({ element: startEl, anchor: 'center' })
+      .setLngLat(toLngLat(start))
+      .setPopup(new maplibregl.Popup({ offset: 18 }).setText(startLabel))
+      .addTo(map);
+
+    const endEl = document.createElement('div');
+    endEl.className = 'route-endpoint-marker route-destination-marker';
+    endEl.title = endLabel;
+    endEl.innerHTML = `<span></span><strong>${endLabel}</strong>`;
+    const endMarker = new maplibregl.Marker({ element: endEl, anchor: 'bottom' })
+      .setLngLat(toLngLat(end))
+      .setPopup(new maplibregl.Popup({ offset: 18 }).setText(endLabel))
+      .addTo(map);
+
+    routeEndpointMarkersGroup.current = [startMarker, endMarker];
+  };
+
   const renderRouteLine = (routeCoordinates) => {
     const map = leafletMapInstance.current;
     if (!map || !routeCoordinates?.length) return;
-    clearMapLibreLayer('route-line');
+    clearRouteLine();
     map.addSource('route-line', {
       type: 'geojson',
       data: {
@@ -1020,11 +1114,22 @@ export default function App() {
       source: 'route-line',
       paint: {
         'line-color': '#ef4444',
-        'line-width': 6,
-        'line-opacity': 0.92
+        'line-width': 7,
+        'line-opacity': 0.96
       },
       layout: { 'line-cap': 'round', 'line-join': 'round' }
     });
+    map.addLayer({
+      id: 'route-line-casing',
+      type: 'line',
+      source: 'route-line',
+      paint: {
+        'line-color': '#fecaca',
+        'line-width': 11,
+        'line-opacity': 0.32
+      },
+      layout: { 'line-cap': 'round', 'line-join': 'round' }
+    }, 'route-line');
   };
 
   const renderAlternativeRoutes = (alternatives = []) => {
@@ -1052,9 +1157,9 @@ export default function App() {
       type: 'line',
       source: 'route-alternatives',
       paint: {
-        'line-color': ['get', 'color'],
-        'line-width': 4,
-        'line-opacity': 0.72
+        'line-color': '#94a3b8',
+        'line-width': 3.5,
+        'line-opacity': 0.34
       },
       layout: { 'line-cap': 'round', 'line-join': 'round' }
     });
@@ -1312,18 +1417,23 @@ export default function App() {
 
   useEffect(() => {
     if (mobileMode !== 'nav' || !navigator.geolocation) {
-      navTelemetryRef.current = { lastCoords: null, coveredMeters: 0 };
-      setNavTelemetry({ speedKmh: 0, coveredKm: 0 });
+      navTelemetryRef.current = { lastCoords: null, coveredMeters: 0, heading: 0 };
+      setNavTelemetry({ speedKmh: 0, coveredKm: 0, heading: 0, accuracy: null });
       return undefined;
     }
 
-    navTelemetryRef.current = { lastCoords: null, coveredMeters: 0 };
+    navTelemetryRef.current = { lastCoords: lastUserLocation?.coords || null, coveredMeters: 0, heading: 0 };
     navRerouteRef.current = { lastRerouteAt: 0, offRouteHits: 0, currentStepIndex: 0 };
     const watchId = navigator.geolocation.watchPosition(
       (position) => {
         const coords = [position.coords.latitude, position.coords.longitude];
         const speedKmh = Math.max(0, ((position.coords.speed || 0) * 3.6));
         const previous = navTelemetryRef.current.lastCoords;
+        const heading = Number.isFinite(position.coords.heading)
+          ? position.coords.heading
+          : previous
+            ? getBearingDegrees(previous, coords)
+            : navTelemetryRef.current.heading;
         let coveredMeters = navTelemetryRef.current.coveredMeters;
 
         if (previous) {
@@ -1331,11 +1441,22 @@ export default function App() {
           if (delta < 300) coveredMeters += delta;
         }
 
-        navTelemetryRef.current = { lastCoords: coords, coveredMeters };
+        navTelemetryRef.current = { lastCoords: coords, coveredMeters, heading };
         setNavTelemetry({
           speedKmh,
-          coveredKm: coveredMeters / 1000
+          coveredKm: coveredMeters / 1000,
+          heading,
+          accuracy: position.coords.accuracy || null
         });
+        renderUserLocationMarker(coords, { label: 'Current location', heading, variant: 'live' });
+        if (leafletMapInstance.current) {
+          leafletMapInstance.current.easeTo({
+            center: toLngLat(coords),
+            bearing: heading,
+            zoom: Math.max(leafletMapInstance.current.getZoom(), 16),
+            duration: 650
+          });
+        }
 
         const destination = lastRouteEndpointsRef.current?.end;
         if (destination) {
@@ -1398,7 +1519,7 @@ export default function App() {
       () => {
         setNavTelemetry((current) => ({ ...current, speedKmh: 0 }));
       },
-      { enableHighAccuracy: true, maximumAge: 3000, timeout: 15000 }
+      { enableHighAccuracy: true, maximumAge: 1000, timeout: 12000 }
     );
 
     return () => navigator.geolocation.clearWatch(watchId);
@@ -1410,6 +1531,7 @@ export default function App() {
       rerouteNavigationToPlace(location);
       return;
     }
+    clearSearchState();
     setActiveLocation(location);
     setMobileSheetOpen(true);
     setMobileMode('place');
@@ -1489,11 +1611,11 @@ export default function App() {
     setRouteToQuery(isRouteDestination(activeLocation) ? activeLocation.name : '');
   }, [activeLocation]);
 
-  const drawRouteBetween = async (start, end, label = "destination", modeId = travelMode, startLabel = "Selected start", waypoint = null) => {
+  const drawRouteBetween = async (start, end, label = "destination", modeId = travelMode, startLabel = "Selected start", waypoint = null, allowModeFallback = true) => {
     const map = leafletMapInstance.current;
     if (!map || !leafletLoaded) return null;
 
-    clearMapLibreLayer('route-line');
+    clearRouteLine();
     lastRouteEndpointsRef.current = { start, end, label, startLabel, waypoint };
     const selectedMode = TRAVEL_MODES.find((mode) => mode.id === modeId) || TRAVEL_MODES[0];
     const routeSummary = waypoint
@@ -1504,6 +1626,7 @@ export default function App() {
       routeLineCoordinatesRef.current = routeCoordinates;
       renderAlternativeRoutes(alternatives);
       renderRouteLine(routeCoordinates);
+      renderRouteEndpointMarkers(routeCoordinates[0] || start, routeCoordinates.at(-1) || end, startLabel, label);
       const bounds = routeCoordinates.reduce(
         (box, coord) => box.extend(toLngLat(coord)),
         new maplibregl.LngLatBounds(toLngLat(routeCoordinates[0]), toLngLat(routeCoordinates[0]))
@@ -1659,6 +1782,12 @@ export default function App() {
       }
       return { distanceKm, durationMinutes, fuelLiters, constructionHits };
     } catch {
+      if (allowModeFallback && selectedMode.id !== 'walking') {
+        setTravelMode('walking');
+        triggerToast("Walking Route", `${selectedMode.label} route was unavailable, showing walking instead.`, true);
+        return drawRouteBetween(start, end, label, 'walking', startLabel, waypoint, false);
+      }
+
       const fallbackRoute = waypoint ? [start, waypoint.coords, end] : [start, end];
       const distanceKm = fallbackRoute
         .slice(1)
@@ -1706,16 +1835,7 @@ export default function App() {
     };
     setLastUserLocation(currentLocation);
     if (userLayerGroup.current) {
-      userLayerGroup.current.forEach((marker) => marker.remove());
-      userLayerGroup.current = [];
-      const userIcon = document.createElement('div');
-      userIcon.className = 'gps-marker';
-      userIcon.innerHTML = '<span></span>';
-      const marker = new maplibregl.Marker({ element: userIcon, anchor: 'center' })
-        .setLngLat(toLngLat(coords))
-        .setPopup(new maplibregl.Popup({ offset: 18 }).setText('Current location'))
-        .addTo(leafletMapInstance.current);
-      userLayerGroup.current.push(marker);
+      renderUserLocationMarker(coords, { label: 'Current location', heading: navTelemetryRef.current.heading, variant: 'live' });
     }
     await drawRouteBetween(coords, destination, label, travelMode, 'Current location');
     setRouteFromQuery('Current location');
@@ -1730,6 +1850,10 @@ export default function App() {
     setSelectedRouteId(alternative.id);
     renderAlternativeRoutes(routeAlternatives.filter((route) => route.id !== alternative.id));
     renderRouteLine(alternative.coordinates);
+    if (lastRouteEndpointsRef.current) {
+      const { start, end, startLabel, label } = lastRouteEndpointsRef.current;
+      renderRouteEndpointMarkers(alternative.coordinates[0] || start, alternative.coordinates.at(-1) || end, startLabel, label);
+    }
 
     const selectedMode = TRAVEL_MODES.find((mode) => mode.id === travelMode) || TRAVEL_MODES[0];
     const constructionHits = getConstructionHitsForRoute(alternative.coordinates);
@@ -1825,16 +1949,7 @@ export default function App() {
         return false;
       }
       if (userLayerGroup.current) {
-        userLayerGroup.current.forEach((marker) => marker.remove());
-        userLayerGroup.current = [];
-        const startIcon = document.createElement('div');
-        startIcon.className = 'gps-marker selected-start';
-        startIcon.innerHTML = '<span></span>';
-        const marker = new maplibregl.Marker({ element: startIcon, anchor: 'center' })
-          .setLngLat(toLngLat(startPlace.coords))
-          .setPopup(new maplibregl.Popup({ offset: 18 }).setText(`Start: ${startPlace.name}`))
-          .addTo(leafletMapInstance.current);
-        userLayerGroup.current.push(marker);
+        renderUserLocationMarker(startPlace.coords, { label: `Start: ${startPlace.name}`, variant: 'selected-start' });
       }
       await drawRouteBetween(startPlace.coords, destination.coords, destination.name, travelMode, startPlace.name);
       triggerToast("Route Start", `Starting from ${startPlace.name}.`, false);
@@ -1848,16 +1963,7 @@ export default function App() {
 
     if (hasExplicitStart && startOverride === null && lastUserLocation) {
       if (userLayerGroup.current) {
-        userLayerGroup.current.forEach((marker) => marker.remove());
-        userLayerGroup.current = [];
-        const userIcon = document.createElement('div');
-        userIcon.className = 'gps-marker';
-        userIcon.innerHTML = '<span></span>';
-        const marker = new maplibregl.Marker({ element: userIcon, anchor: 'center' })
-          .setLngLat(toLngLat(lastUserLocation.coords))
-          .setPopup(new maplibregl.Popup({ offset: 18 }).setText(lastUserLocation.name))
-          .addTo(leafletMapInstance.current);
-        userLayerGroup.current.push(marker);
+        renderUserLocationMarker(lastUserLocation.coords, { label: lastUserLocation.name, heading: navTelemetryRef.current.heading, variant: 'live' });
       }
       setRouteFromQuery(lastUserLocation.name);
       await drawRouteBetween(lastUserLocation.coords, destination.coords, destination.name, travelMode, lastUserLocation.name);
@@ -1884,16 +1990,7 @@ export default function App() {
       setLastUserLocation(gpsStartLocation);
       setRouteFromQuery(gpsStartLocation.name);
       if (userLayerGroup.current) {
-        userLayerGroup.current.forEach((marker) => marker.remove());
-        userLayerGroup.current = [];
-        const userIcon = document.createElement('div');
-        userIcon.className = 'gps-marker';
-        userIcon.innerHTML = '<span></span>';
-        const marker = new maplibregl.Marker({ element: userIcon, anchor: 'center' })
-          .setLngLat(toLngLat(start))
-          .setPopup(new maplibregl.Popup({ offset: 18 }).setText('Your GPS location'))
-          .addTo(leafletMapInstance.current);
-        userLayerGroup.current.push(marker);
+        renderUserLocationMarker(start, { label: 'Your GPS location', heading: position.coords.heading || 0, variant: 'live' });
       }
       await drawRouteBetween(start, destination.coords, destination.name, travelMode, gpsStartLocation.name);
       return true;
@@ -1918,10 +2015,11 @@ export default function App() {
     routeLineCoordinatesRef.current = [];
     lastRouteEndpointsRef.current = null;
     navRerouteRef.current = { lastRerouteAt: 0, offRouteHits: 0, currentStepIndex: 0 };
-    clearMapLibreLayer('route-line');
+    clearRouteLine();
     clearMapLibreLayer('route-alternatives');
     alternativeRouteMarkersGroup.current.forEach((marker) => marker.remove());
     alternativeRouteMarkersGroup.current = [];
+    clearRouteEndpointMarkers();
     if (userLayerGroup.current) {
       userLayerGroup.current.forEach((marker) => marker.remove());
       userLayerGroup.current = [];
@@ -1935,26 +2033,13 @@ export default function App() {
 
   const handleCloseMobileSheet = () => {
     playClickSound();
-    routeLineCoordinatesRef.current = [];
-    lastRouteEndpointsRef.current = null;
-    navRerouteRef.current = { lastRerouteAt: 0, offRouteHits: 0, currentStepIndex: 0 };
-    clearMapLibreLayer('route-line');
-    clearMapLibreLayer('route-alternatives');
-    alternativeRouteMarkersGroup.current.forEach((marker) => marker.remove());
-    alternativeRouteMarkersGroup.current = [];
-    if (userLayerGroup.current) {
-      userLayerGroup.current.forEach((marker) => marker.remove());
-      userLayerGroup.current = [];
-    }
-    setRouteActive(false);
-    setRouteMeta(null);
-    setRouteAlternatives([]);
-    setSelectedRouteId(null);
-    setActiveLocation(DEFAULT_ACTIVE_LOCATION);
-    setSearchQuery('');
+    clearSearchState();
     setRouteSearchTarget(null);
+    setLayersMenuOpen(false);
+    setMobileNavMenuOpen(false);
+    setMobileRecenterExpanded(false);
     setMobileMode('place');
-    setMobileSheetOpen(true);
+    setMobileSheetOpen(false);
   };
 
   const handleMobileDirections = async () => {
@@ -2452,6 +2537,7 @@ export default function App() {
     if (!searchQuery.trim()) return;
 
     playClickSound();
+    const submittedQuery = searchQuery;
     const destination = createSearchDestination();
     if (routeSearchTarget) {
       handleRouteSearchSelect(destination);
@@ -2461,8 +2547,6 @@ export default function App() {
       rerouteNavigationToPlace(destination);
       return;
     }
-    setSearchQuery(destination.name);
-
     if (leafletMapInstance.current) {
       leafletMapInstance.current.flyTo({ center: toLngLat(destination.coords), zoom: 14, duration: 1200 });
     }
@@ -2476,7 +2560,6 @@ export default function App() {
     const bestMatch = searchSuggestions[0];
 
     if (bestMatch) {
-      setSearchQuery(bestMatch.place.name);
       handleSelectLocation(bestMatch.place);
     } else {
       // Dynamic random simulation within Hyderabad bounds
@@ -2484,7 +2567,7 @@ export default function App() {
       const randomLng = 78.4990 + (Math.random() - 0.5) * 0.04;
 
       const simulatedLocation = {
-        name: searchQuery,
+        name: submittedQuery,
         coords: [randomLat, randomLng],
         address: `Located coordinate within Alwal area bounds`,
         temp: "31°C",
@@ -2498,10 +2581,11 @@ export default function App() {
       setActiveLocation(simulatedLocation);
       setMobileSheetOpen(true);
       setMobileMode('place');
+      clearSearchState();
       if (spiderGridActive) {
         renderSpiderGrid(simulatedLocation.coords);
       }
-      triggerToast("Address Found", `Displaying map results for "${searchQuery}".`, false);
+      triggerToast("Address Found", `Displaying map results for "${submittedQuery}".`, false);
     }
   };
 
@@ -2685,16 +2769,7 @@ export default function App() {
       type: "gps"
     };
 
-    userLayerGroup.current.forEach((marker) => marker.remove());
-    userLayerGroup.current = [];
-    const userIcon = document.createElement('div');
-    userIcon.className = 'gps-marker';
-    userIcon.innerHTML = '<span></span>';
-    const marker = new maplibregl.Marker({ element: userIcon, anchor: 'center' })
-      .setLngLat(toLngLat(coords))
-      .setPopup(new maplibregl.Popup({ offset: 18 }).setText(location.name))
-      .addTo(leafletMapInstance.current);
-    userLayerGroup.current.push(marker);
+    renderUserLocationMarker(coords, { label: location.name, heading: navTelemetryRef.current.heading, variant: 'live' });
 
     setLastUserLocation(location);
     if (options.select !== false) {
@@ -2924,6 +2999,7 @@ export default function App() {
           )}
 
           {/* Floating Search Results Drawer - Solid rich dark background for clear contrast against white map */}
+          {!searchQuery.trim() && !isRouteDestination(activeLocation) && (
           <div className="hidden bg-[#0b132b] border border-[#06b6d4]/35 rounded-2xl shadow-2xl glow-cyan p-3 pointer-events-auto md:flex flex-col w-full max-h-[60vh] overflow-y-auto">
             <div className="space-y-1">
               <div className="px-2 pb-2 text-[10px] font-bold uppercase tracking-wide text-slate-500">
@@ -2962,6 +3038,7 @@ export default function App() {
               <span>More from recent history</span>
             </button>
           </div>
+          )}
         </section>
 
         {/* 3. TOP HORIZONTAL CATEGORY CHIPS - Rich Solid Dark Blue backdrops */}
@@ -3020,7 +3097,7 @@ export default function App() {
         </div>
 
         {/* MOBILE MAP UI */}
-        {(mobileMode === 'place' || routeSearchTarget) && (
+        {((mobileMode === 'place' && !isRouteDestination(activeLocation)) || routeSearchTarget) && (
         <section className="absolute inset-x-3 top-[calc(env(safe-area-inset-top)+10px)] z-40 flex flex-col gap-2 pointer-events-none md:hidden">
           <form
             onSubmit={handleSearchSubmit}
@@ -3534,7 +3611,7 @@ export default function App() {
                   <h2 className="text-xl font-semibold text-slate-50">Ask Maps</h2>
                   <p className="mt-1 text-sm text-slate-400">Ask about {activeLocation.name}</p>
                 </div>
-                <button onClick={() => setMobileMode('place')} className="mobile-circle-button" title="Close ask">
+                <button onClick={handleCloseMobileSheet} className="mobile-circle-button" title="Close ask">
                   <X size={22} />
                 </button>
               </div>
@@ -3558,7 +3635,7 @@ export default function App() {
                   <h2 className="truncate text-xl font-semibold text-slate-50">Route to {activeLocation.name}</h2>
                   <p className="mt-1 truncate text-sm text-slate-400">{activeLocation.address}</p>
                 </div>
-                <button onClick={() => setMobileMode('place')} className="mobile-circle-button" title="Close route setup">
+                <button onClick={handleCloseMobileSheet} className="mobile-circle-button" title="Close route setup">
                   <X size={22} />
                 </button>
               </div>
