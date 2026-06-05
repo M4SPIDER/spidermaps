@@ -102,16 +102,25 @@ body {
 }
 
 .maplibregl-popup-content {
+  background: #111827 !important;
+  border: 1px solid rgb(148 163 184 / 0.28) !important;
   border-radius: 10px !important;
-  color: #0f172a !important;
+  color: #f8fafc !important;
   font-family: inherit !important;
   font-weight: 800;
   letter-spacing: 0;
-  box-shadow: 0 12px 30px rgb(15 23 42 / 0.28) !important;
+  box-shadow: 0 16px 36px rgb(0 0 0 / 0.38) !important;
 }
 
 .maplibregl-popup-close-button {
-  color: #0f172a !important;
+  color: #f8fafc !important;
+  font-size: 18px !important;
+  padding: 4px 8px !important;
+}
+
+.maplibregl-popup-tip {
+  border-top-color: #111827 !important;
+  border-bottom-color: #111827 !important;
 }
 
 .spider-map-dark .maplibregl-canvas {
@@ -193,13 +202,13 @@ body {
 }
 
 .construction-popup strong {
-  color: #fed7aa;
+  color: #f8fafc;
   font-size: 12px;
   line-height: 1.2;
 }
 
 .construction-popup span {
-  color: #fb923c;
+  color: #fbbf24;
   font-size: 10px;
   font-weight: 800;
   text-transform: uppercase;
@@ -207,7 +216,7 @@ body {
 
 .construction-popup p {
   margin: 0;
-  color: #e2e8f0;
+  color: #cbd5e1;
   font-size: 11px;
   line-height: 1.35;
 }
@@ -291,15 +300,23 @@ body {
 .mobile-primary-pill,
 .mobile-secondary-pill {
   display: inline-flex;
-  min-width: max-content;
+  min-width: 0;
   align-items: center;
   justify-content: center;
-  gap: 9px;
+  gap: 7px;
   border-radius: 999px;
   padding: 10px 14px;
   font-size: 14px;
   font-weight: 800;
   line-height: 1;
+}
+
+.mobile-primary-pill span,
+.mobile-secondary-pill span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .mobile-primary-pill {
@@ -575,6 +592,7 @@ body {
   place-items: center;
   color: #ffffff;
   font-family: inherit;
+  z-index: 5;
 }
 
 .route-start-marker {
@@ -641,6 +659,22 @@ body {
   text-overflow: ellipsis;
   transform: translateX(-50%);
   white-space: nowrap;
+}
+
+.route-last-leg-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  background: #ef4444;
+  border: 2px solid #fecaca;
+  box-shadow: 0 0 10px rgb(239 68 68 / 0.55);
+  pointer-events: none;
+}
+
+.route-last-leg-dot.destination-dot {
+  width: 12px;
+  height: 12px;
+  box-shadow: 0 0 0 2px rgb(17 24 39 / 0.5), 0 0 14px rgb(239 68 68 / 0.8);
 }
 
 .alternative-route-label {

@@ -736,6 +736,7 @@ export default function App() {
   const userLayerGroup = useRef([]);
   const alternativeRouteMarkersGroup = useRef([]);
   const routeEndpointMarkersGroup = useRef([]);
+  const routeLastLegMarkersGroup = useRef([]);
   const routeLineCoordinatesRef = useRef([]);
   const lastRouteEndpointsRef = useRef(null);
   const navTelemetryRef = useRef({ lastCoords: null, coveredMeters: 0, heading: 0 });
@@ -1028,7 +1029,8 @@ export default function App() {
           renderRouteLine(routeLineCoordinatesRef.current);
           if (lastRouteEndpointsRef.current) {
             const { start, end, startLabel, label } = lastRouteEndpointsRef.current;
-            renderRouteEndpointMarkers(routeLineCoordinatesRef.current[0] || start, routeLineCoordinatesRef.current.at(-1) || end, startLabel, label);
+            renderRouteEndpointMarkers(routeLineCoordinatesRef.current[0] || start, end, startLabel, label);
+            renderRouteLastLeg(routeLineCoordinatesRef.current.at(-1) || end, end);
           }
           if (incidentsActive && routeActive) renderIncidents();
           if (constructionActive && routeActive) renderConstructionZones();
@@ -1066,6 +1068,7 @@ export default function App() {
   };
 
   const clearRouteLine = () => {
+    clearRouteLastLeg();
     clearMapLibreLayer('route-line-casing');
     clearMapLibreLayer('route-line');
   };
@@ -1073,6 +1076,12 @@ export default function App() {
   const clearRouteEndpointMarkers = () => {
     routeEndpointMarkersGroup.current.forEach((marker) => marker.remove());
     routeEndpointMarkersGroup.current = [];
+  };
+
+  const clearRouteLastLeg = () => {
+    clearMapLibreLayer('route-last-leg');
+    routeLastLegMarkersGroup.current.forEach((marker) => marker.remove());
+    routeLastLegMarkersGroup.current = [];
   };
 
   const renderRouteEndpointMarkers = (start, end, startLabel = 'Start', endLabel = 'Destination') => {
@@ -1099,6 +1108,37 @@ export default function App() {
       .addTo(map);
 
     routeEndpointMarkersGroup.current = [startMarker, endMarker];
+  };
+
+  const renderRouteLastLeg = (routeEnd, destination) => {
+    const map = leafletMapInstance.current;
+    if (!map) return;
+    clearRouteLastLeg();
+    if (!routeEnd || !destination) return;
+    const distanceMeters = getDistanceMeters(routeEnd, destination);
+    if (distanceMeters < 8) return;
+
+    const dotCount = Math.min(30, Math.max(7, Math.round(distanceMeters / 16)));
+    const features = Array.from({ length: dotCount }, (_, index) => {
+      const ratio = dotCount === 1 ? 1 : index / (dotCount - 1);
+      const point = [
+        routeEnd[0] + (destination[0] - routeEnd[0]) * ratio,
+        routeEnd[1] + (destination[1] - routeEnd[1]) * ratio
+      ];
+      return {
+        point
+      };
+    });
+
+    routeLastLegMarkersGroup.current = features.map(({ point }, index) => {
+      const dot = document.createElement('div');
+      dot.className = index === features.length - 1
+        ? 'route-last-leg-dot destination-dot'
+        : 'route-last-leg-dot';
+      return new maplibregl.Marker({ element: dot, anchor: 'center' })
+        .setLngLat(toLngLat(point))
+        .addTo(map);
+    });
   };
 
   const renderRouteLine = (routeCoordinates) => {
@@ -1630,7 +1670,8 @@ export default function App() {
       routeLineCoordinatesRef.current = routeCoordinates;
       renderAlternativeRoutes(alternatives);
       renderRouteLine(routeCoordinates);
-      renderRouteEndpointMarkers(routeCoordinates[0] || start, routeCoordinates.at(-1) || end, startLabel, label);
+      renderRouteEndpointMarkers(routeCoordinates[0] || start, end, startLabel, label);
+      renderRouteLastLeg(routeCoordinates.at(-1) || end, end);
       const bounds = routeCoordinates.reduce(
         (box, coord) => box.extend(toLngLat(coord)),
         new maplibregl.LngLatBounds(toLngLat(routeCoordinates[0]), toLngLat(routeCoordinates[0]))
@@ -1858,7 +1899,8 @@ export default function App() {
     renderRouteLine(alternative.coordinates);
     if (lastRouteEndpointsRef.current) {
       const { start, end, startLabel, label } = lastRouteEndpointsRef.current;
-      renderRouteEndpointMarkers(alternative.coordinates[0] || start, alternative.coordinates.at(-1) || end, startLabel, label);
+      renderRouteEndpointMarkers(alternative.coordinates[0] || start, end, startLabel, label);
+      renderRouteLastLeg(alternative.coordinates.at(-1) || end, end);
     }
 
     const selectedMode = TRAVEL_MODES.find((mode) => mode.id === travelMode) || TRAVEL_MODES[0];
@@ -2656,6 +2698,25 @@ export default function App() {
     return <Crosshair size={size} />;
   };
 
+  const getRouteModeTitle = () => {
+    if (travelMode === 'walking') return 'Walk';
+    if (travelMode === 'bike') return 'Bike';
+    if (travelMode === 'cycle') return 'Cycle';
+    if (travelMode === 'tracking') return 'Track';
+    return 'Drive';
+  };
+
+  const getRouteFromDisplay = () => {
+    if (isGpsStartText(routeFromQuery) || routeMeta?.routeFrom === 'Approximate location') return 'Your Location';
+    return routeFromQuery || routeMeta?.routeFrom || 'Your Location';
+  };
+
+  const getRouteToDisplay = () => (
+    isRouteDestinationText(routeToQuery)
+      ? routeToQuery
+      : (routeMeta?.routeTo || (isRouteDestination(activeLocation) ? activeLocation.name : 'Choose destination'))
+  );
+
   const handleTravelModeChange = (modeId) => {
     playClickSound();
     setTravelMode(modeId);
@@ -3441,6 +3502,26 @@ export default function App() {
           />
         )}
 
+        {routeActive && mobileMode === 'route' && !routeSearchTarget && (
+          <section className="fixed left-3 right-3 top-[calc(env(safe-area-inset-top)+12px)] z-[58] rounded-3xl bg-[#202124]/98 px-4 py-3 text-white shadow-2xl md:hidden">
+            <div className="grid grid-cols-[auto_1fr_auto] items-center gap-3">
+              <div className="grid place-items-center gap-1">
+                <span className="h-3.5 w-3.5 rounded-full border-4 border-blue-400 bg-white" />
+                <span className="h-6 border-l-2 border-dotted border-slate-500" />
+                <span className="h-3.5 w-3.5 rounded-full border-2 border-rose-400" />
+              </div>
+              <div className="min-w-0 space-y-3">
+                <div className="truncate text-base font-semibold text-blue-100">{getRouteFromDisplay()}</div>
+                <div className="h-px bg-white/15" />
+                <div className="truncate text-base font-semibold text-slate-100">{getRouteToDisplay()}</div>
+              </div>
+              <button type="button" onClick={handleCloseMobileSheet} className="grid h-10 w-10 place-items-center rounded-full text-slate-200" title="Close route setup">
+                <X size={22} />
+              </button>
+            </div>
+          </section>
+        )}
+
         {routeSearchTarget && mobileMode !== 'nav' && (
           <section className="fixed inset-0 z-[80] bg-[#07090d] px-3 pt-[calc(env(safe-area-inset-top)+12px)] text-white md:hidden">
             <form
@@ -3587,8 +3668,8 @@ export default function App() {
             <div className="space-y-3">
               <div className="flex items-center justify-between gap-3">
                 <div className="min-w-0">
-                  <h2 className="truncate text-xl font-semibold text-slate-50">Route to {activeLocation.name}</h2>
-                  <p className="mt-1 truncate text-sm text-slate-400">{activeLocation.address}</p>
+                  <h2 className="truncate text-3xl font-semibold text-slate-50">{getRouteModeTitle()}</h2>
+                  <p className="mt-1 truncate text-sm text-slate-400">{getRouteFromDisplay()} to {getRouteToDisplay()}</p>
                 </div>
                 <button onClick={handleCloseMobileSheet} className="mobile-circle-button" title="Close route setup">
                   <X size={22} />
@@ -3605,7 +3686,7 @@ export default function App() {
                     className="min-w-0 rounded-xl border border-white/10 bg-[#07090d] px-3 py-2 text-left text-sm font-semibold text-white"
                   >
                     <span className="block text-[10px] uppercase tracking-wide text-slate-500">From</span>
-                    <span className="block truncate">{routeFromQuery || routeMeta?.routeFrom || 'Choose start'}</span>
+                    <span className="block truncate">{getRouteFromDisplay()}</span>
                   </button>
                   <button type="button" onClick={useGpsRouteStart} className="rounded-xl bg-cyan-400/15 px-3 py-2 text-xs font-bold text-cyan-200">GPS</button>
                   <span className="h-3 w-3 rounded-full bg-rose-400" />
@@ -3615,7 +3696,7 @@ export default function App() {
                     className="min-w-0 rounded-xl border border-white/10 bg-[#07090d] px-3 py-2 text-left text-sm font-semibold text-white"
                   >
                     <span className="block text-[10px] uppercase tracking-wide text-slate-500">To</span>
-                    <span className="block truncate">{isRouteDestinationText(routeToQuery) ? routeToQuery : (routeMeta?.routeTo || (isRouteDestination(activeLocation) ? activeLocation.name : 'Choose destination'))}</span>
+                    <span className="block truncate">{getRouteToDisplay()}</span>
                   </button>
                   <button type="button" onClick={() => openRouteSearch('to')} className="rounded-xl bg-cyan-400/15 px-3 py-2 text-xs font-bold text-cyan-200">Search</button>
                   </div>
@@ -3643,14 +3724,22 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-4 gap-2">
                 <button onClick={handleMobileStart} className="mobile-primary-pill">
                   <Navigation size={19} />
                   Start
                 </button>
-                <button onClick={handleMobileDirections} className="mobile-secondary-pill">
-                  <Route size={19} />
-                  Refresh
+                <button onClick={() => handleMobileSearchAlongRoute()} className="mobile-secondary-pill">
+                  <Plus size={19} />
+                  Stops
+                </button>
+                <button onClick={handleShareLocation} className="mobile-secondary-pill">
+                  <Share2 size={19} />
+                  Share
+                </button>
+                <button onClick={handleSaveLocation} className="mobile-secondary-pill">
+                  <Bookmark size={19} />
+                  Save
                 </button>
               </div>
 
