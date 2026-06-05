@@ -965,6 +965,7 @@ export default function App() {
           map.getContainer().classList.remove('spider-map-switching');
           updateTileLayer();
           renderMarkers();
+          renderAlternativeRoutes(routeAlternatives.filter((route) => route.id !== selectedRouteId));
           renderRouteLine(routeLineCoordinatesRef.current);
           if (incidentsActive && routeActive) renderIncidents();
           if (constructionActive && routeActive) renderConstructionZones();
@@ -1079,6 +1080,11 @@ export default function App() {
       alternativeRouteMarkersGroup.current.push(marker);
     });
   };
+
+  useEffect(() => {
+    if (!leafletLoaded || !routeActive) return;
+    renderAlternativeRoutes(routeAlternatives.filter((route) => route.id !== selectedRouteId));
+  }, [leafletLoaded, routeActive, routeAlternatives, selectedRouteId]);
 
   const renderMarkers = () => {
     const map = leafletMapInstance.current;
@@ -1505,6 +1511,68 @@ export default function App() {
       map.fitBounds(bounds, { padding: 70, duration: 900 });
     };
 
+    const buildRouteCandidate = (candidate, index, candidateLabel = null) => {
+      const coordinates = candidate.geometry.coordinates.map(([lng, lat]) => [lat, lng]);
+      const distanceKmValue = candidate.distance / 1000;
+      const minutesValue = getEstimatedRouteMinutes(distanceKmValue, selectedMode);
+      const fuelValue = selectedMode.fuelKmPerLiter ? Math.max(0.1, distanceKmValue / selectedMode.fuelKmPerLiter) : 0;
+      return {
+        id: `route-${index}`,
+        index,
+        coordinates,
+        distanceKm: distanceKmValue,
+        durationMinutes: minutesValue,
+        fuelLiters: fuelValue,
+        label: candidateLabel || (index === 0 ? 'Fastest route' : `Alternative ${index + 1}`),
+        steps: candidate.legs?.flatMap((leg) => leg.steps || []) || []
+      };
+    };
+
+    const routeSimilarity = (a, b) => {
+      if (!a?.length || !b?.length) return 0;
+      const sample = a.filter((_, index) => index % Math.max(1, Math.floor(a.length / 18)) === 0).slice(0, 18);
+      const closePoints = sample.filter((point) => getNearestRouteDistance(point, b) < 220).length;
+      return closePoints / Math.max(1, sample.length);
+    };
+
+    const fetchWaypointAlternatives = async (primaryRoute) => {
+      if (waypoint || selectedMode.osrmProfile !== 'driving') return [];
+
+      const straightKm = getDistanceMeters(start, end) / 1000;
+      if (straightKm < 3) return [];
+
+      const mid = [(start[0] + end[0]) / 2, (start[1] + end[1]) / 2];
+      const latDiff = end[0] - start[0];
+      const lngDiff = end[1] - start[1];
+      const length = Math.hypot(latDiff, lngDiff) || 1;
+      const normal = [-lngDiff / length, latDiff / length];
+      const offset = Math.min(0.18, Math.max(0.025, straightKm / 380));
+      const waypointCandidates = [
+        [mid[0] + normal[0] * offset, mid[1] + normal[1] * offset],
+        [mid[0] - normal[0] * offset, mid[1] - normal[1] * offset],
+        [mid[0] + normal[0] * offset * 1.7, mid[1] + normal[1] * offset * 1.7],
+        [mid[0] - normal[0] * offset * 1.7, mid[1] - normal[1] * offset * 1.7]
+      ];
+
+      const fetched = await Promise.allSettled(waypointCandidates.map(async (via, index) => {
+        const points = `${start[1]},${start[0]};${via[1]},${via[0]};${end[1]},${end[0]}`;
+        const response = await fetch(`https://router.project-osrm.org/route/v1/${selectedMode.osrmProfile}/${points}?overview=full&geometries=geojson&steps=true&alternatives=false`);
+        if (!response.ok) throw new Error('Waypoint route failed');
+        const payload = await response.json();
+        const candidate = payload.routes?.[0];
+        if (!candidate) throw new Error('No waypoint route');
+        return buildRouteCandidate(candidate, index + 1, `Alternative ${index + 2}`);
+      }));
+
+      return fetched
+        .filter((result) => result.status === 'fulfilled')
+        .map((result) => result.value)
+        .filter((candidate) => (
+          candidate.distanceKm <= primaryRoute.distanceKm * 1.75
+          && routeSimilarity(candidate.coordinates, primaryRoute.coordinates) < 0.92
+        ));
+    };
+
     try {
       const routePoints = waypoint
         ? `${start[1]},${start[0]};${waypoint.coords[1]},${waypoint.coords[0]};${end[1]},${end[0]}`
@@ -1516,23 +1584,21 @@ export default function App() {
       const route = data.routes?.[0];
       if (!route) throw new Error('No OSRM route returned');
 
-      let alternativeRoutes = (data.routes || [])
-        .map((candidate, index) => {
-          const coordinates = candidate.geometry.coordinates.map(([lng, lat]) => [lat, lng]);
-          const distanceKmValue = candidate.distance / 1000;
-          const minutesValue = getEstimatedRouteMinutes(distanceKmValue, selectedMode);
-          const fuelValue = selectedMode.fuelKmPerLiter ? Math.max(0.1, distanceKmValue / selectedMode.fuelKmPerLiter) : 0;
-          return {
-            id: `route-${index}`,
-            index,
-            coordinates,
-            distanceKm: distanceKmValue,
-            durationMinutes: minutesValue,
-            fuelLiters: fuelValue,
-            label: index === 0 ? 'Fastest route' : `Alternative ${index + 1}`,
-            steps: candidate.legs?.flatMap((leg) => leg.steps || []) || []
-          };
+      let alternativeRoutes = (data.routes || []).map((candidate, index) => buildRouteCandidate(candidate, index));
+      if (alternativeRoutes.length < 2 && alternativeRoutes[0]) {
+        const waypointRoutes = await fetchWaypointAlternatives(alternativeRoutes[0]);
+        waypointRoutes.forEach((candidate) => {
+          const duplicate = alternativeRoutes.some((routeOption) => routeSimilarity(candidate.coordinates, routeOption.coordinates) > 0.94);
+          if (!duplicate) {
+            alternativeRoutes.push({
+              ...candidate,
+              id: `route-${alternativeRoutes.length}`,
+              index: alternativeRoutes.length,
+              label: `Alternative ${alternativeRoutes.length + 1}`
+            });
+          }
         });
+      }
       const primaryRoute = alternativeRoutes[0];
       if (primaryRoute) {
         const alternativeColors = ['#ef4444', '#2563eb', '#7c3aed', '#0891b2', '#f97316', '#16a34a'];
@@ -2269,7 +2335,63 @@ export default function App() {
     triggerToast("Speedometer", `Navigation speed set to ${unit.toUpperCase()}.`, false);
   };
 
-  const getClickedPlace = (coords) => {
+  const getRenderedClickedPlace = (event) => {
+    const map = leafletMapInstance.current;
+    if (!map || !event?.point) return null;
+
+    const features = map.queryRenderedFeatures(event.point, {
+      layers: map.getStyle()?.layers?.map((layer) => layer.id) || []
+    });
+    const namedFeature = features.find((feature) => {
+      const props = feature.properties || {};
+      return props.name_en || props['name:en'] || props.name || props.ref;
+    });
+    if (!namedFeature) return null;
+
+    const props = namedFeature.properties || {};
+    const name = props.name_en || props['name:en'] || props.name || props.ref;
+    const category = props.class || props.type || props.kind || props.brunnel || 'map place';
+    return {
+      name,
+      coords: [event.lngLat.lat, event.lngLat.lng],
+      address: category,
+      temp: "31°C",
+      traffic: "Route estimate available from this map feature",
+      type: category
+    };
+  };
+
+  const reverseLookupClickedPlace = async (coords) => {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 2500);
+    try {
+      const response = await fetch(
+        `https://photon.komoot.io/reverse?lat=${coords[0]}&lon=${coords[1]}&limit=1&lang=en`,
+        { signal: controller.signal }
+      );
+      if (!response.ok) throw new Error('Reverse lookup failed');
+      const payload = await response.json();
+      const feature = payload.features?.[0];
+      const props = feature?.properties || {};
+      const name = props.name || props.street || props.city || props.district || props.state;
+      if (!name) return null;
+      const address = [props.street, props.city, props.state, props.country].filter(Boolean).join(', ');
+      return {
+        name,
+        coords,
+        address: address || `${coords[0].toFixed(5)}, ${coords[1].toFixed(5)}`,
+        temp: "--",
+        traffic: "Route estimate available from this nearby map result",
+        type: props.osm_value || props.osm_key || 'nearby'
+      };
+    } catch {
+      return null;
+    } finally {
+      window.clearTimeout(timer);
+    }
+  };
+
+  const getClickedPlace = async (coords) => {
     const nearest = searchablePlaces
       .map(({ place }) => ({
         place,
@@ -2277,12 +2399,15 @@ export default function App() {
       }))
       .sort((a, b) => a.distance - b.distance)[0];
 
-    if (nearest && nearest.distance <= 450) {
+    if (nearest && nearest.distance <= 1200) {
       return {
         ...nearest.place,
         type: nearest.place.type || 'place'
       };
     }
+
+    const reversePlace = await reverseLookupClickedPlace(coords);
+    if (reversePlace) return reversePlace;
 
     return {
       name: "Dropped Pin",
@@ -2294,10 +2419,10 @@ export default function App() {
     };
   };
 
-  const handleMapClick = (event) => {
+  const handleMapClick = async (event) => {
     if (!event?.lngLat) return;
     playClickSound();
-    const clickedPlace = getClickedPlace([event.lngLat.lat, event.lngLat.lng]);
+    const clickedPlace = getRenderedClickedPlace(event) || await getClickedPlace([event.lngLat.lat, event.lngLat.lng]);
 
     if (mobileMode === 'nav') {
       rerouteNavigationToPlace(clickedPlace);
@@ -3462,7 +3587,7 @@ export default function App() {
                   </button>
                   <button type="button" onClick={() => openRouteSearch('to')} className="rounded-xl bg-cyan-400/15 px-3 py-2 text-xs font-bold text-cyan-200">Search</button>
                   </div>
-                  {routeAlternatives.length > 1 && (
+                  {routeAlternatives.length > 0 && (
                     <div className="space-y-2 rounded-xl border border-white/10 bg-[#07090d] p-2">
                       <div className="text-[10px] font-bold uppercase tracking-wide text-slate-500">
                         Choose route · {routeAlternatives.length} found
