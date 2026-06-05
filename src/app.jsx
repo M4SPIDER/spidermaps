@@ -94,6 +94,30 @@ const placesDatabase = {
     traffic: "Campus approach roads may slow near peak college hours",
     type: "college"
   },
+  mallaReddyCollege: {
+    name: "Malla Reddy College",
+    coords: [17.5932, 78.4449],
+    address: "Maisammaguda, Dulapally, Hyderabad, Telangana",
+    temp: "31°C",
+    traffic: "Campus route estimate available near Maisammaguda / Dulapally",
+    type: "college"
+  },
+  hmtGroundChintal: {
+    name: "HMT Ground Chintal",
+    coords: [17.5014, 78.4417],
+    address: "HMT Colony, Chintal, Quthbullapur, Hyderabad, Telangana 500054",
+    temp: "31°C",
+    traffic: "Local ground near HMT Road / Chintal route corridors",
+    type: "ground"
+  },
+  hpGasChintal: {
+    name: "HP Gas - Praveena Gas Agencies",
+    coords: [17.4978, 78.4498],
+    address: "Venkateswara Nagar / Main Road, Chinthal, Quthbullapur, Hyderabad, Telangana 500055",
+    temp: "31°C",
+    traffic: "HP LPG agency search result near Chintal",
+    type: "gas agency"
+  },
   alwal: {
     name: "Alwal",
     coords: [17.5011, 78.5034],
@@ -147,10 +171,14 @@ const SEARCH_ALIASES = {
   suprabhata: 'suprabatha suprabata arcade commercial shop building kompally',
   ambMall: 'amb mall amb cinemas asian mahesh babu sarath city capital mall kondapur gachibowli hyderabad cinema theatre shopping mall',
   sits: 'sidhartha siddhartha group of institutions institute technology sciences sits narapally peerzadiguda college engineering hyderabad',
+  mallaReddyCollege: 'malla reddy clg college engineering institute university maisammaguda dulapally dhulapally medchal hyderabad mallareddy mrec mriet mrcet mrce',
+  hmtGroundChintal: 'hmt ground hmt grounds chintal chinthal hmt colony hmt road mahendra nagar quthbullapur jeedimetla hyderabad playground sports ground',
+  hpGasChintal: 'hp gas hpcl hpgas praveena gas agencies praveena gas agency chintal chinthal quthbullapur venkateswara nagar main road lpg cylinder cooking gas hyderabad',
   alwal: 'alwal secunderabad city main road'
 };
 
-const PUBLIC_SEARCH_PLACE_KEYS = ['hyderabad', 'goa', 'ambMall', 'sits'];
+const PUBLIC_SEARCH_PLACE_KEYS = [];
+const EXACT_LOCAL_SEARCH_KEYS = [];
 
 const TRAVEL_MODES = [
   { id: 'car', label: 'Car', osrmProfile: 'driving', fuelKmPerLiter: 16, speedFallbackKmh: 34 },
@@ -323,7 +351,7 @@ const HYDERABAD_LOCAL_HAZARDS = [
 const normalizeSearchText = (value) =>
   value
     .toLowerCase()
-    .replace(/[^\w\s]/g, ' ')
+    .replace(/[_\W]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 
@@ -332,6 +360,122 @@ const cleanIntentWords = (value) =>
     .replace(/\b(near me|nearby|route|routes|direction|directions|navigate|navigation|go to|take me|show|find|search|map|maps)\b/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+
+const HYDERABAD_SEARCH_CENTERS = {
+  chintal: [17.50136, 78.44166],
+  kompally: [17.5323, 78.4892],
+  kukatpally: [17.4948, 78.3996],
+  idpl: [17.4816, 78.4336],
+  alwal: [17.5011, 78.5034],
+  hyderabad: [17.3850, 78.4867]
+};
+
+const getSearchCenterForQuery = (query) => {
+  const text = normalizeSearchText(query);
+  if (/\b(idpl|balanagar)\b/.test(text)) return HYDERABAD_SEARCH_CENTERS.idpl;
+  if (/\b(kukatpally|kukatpali|kphb)\b/.test(text)) return HYDERABAD_SEARCH_CENTERS.kukatpally;
+  if (/\b(hmt|chintal|chinthal|quthbullapur|jeedimetla)\b/.test(text)) return HYDERABAD_SEARCH_CENTERS.chintal;
+  if (/\b(kompally|kompali|kompaly)\b/.test(text)) return HYDERABAD_SEARCH_CENTERS.kompally;
+  if (/\b(alwal|secunderabad)\b/.test(text)) return HYDERABAD_SEARCH_CENTERS.alwal;
+  return HYDERABAD_SEARCH_CENTERS.hyderabad;
+};
+
+const SEARCH_AREA_WORDS = new Set([
+  'hyderabad', 'secunderabad', 'telangana', 'medchal', 'chintal', 'chinthal', 'idpl',
+  'balanagar', 'kompally', 'kompali', 'kompaly', 'kukatpally', 'kukatpali', 'kphb',
+  'alwal', 'quthbullapur', 'jeedimetla', 'dulapally', 'maisammaguda', 'near', 'nearby'
+]);
+
+const SEARCH_BRAND_ALIASES = {
+  dmart: ['dmart', 'd mart', 'd-mart', 'avenue supermarts', 'avenue supermarket'],
+  hp: ['hp', 'hpcl', 'hindustan petroleum'],
+  hmt: ['hmt']
+};
+
+const SEARCH_TYPE_ALIASES = {
+  fuel: 'petrol pump gas station fuel hp hpcl',
+  restaurant: 'restaurants restaurant food dining cafe',
+  cafe: 'restaurants cafe food coffee',
+  fast_food: 'restaurants fast food dining',
+  hotel: 'hotels hotel lodge stay',
+  hostel: 'hostels hostel lodge stay',
+  guest_house: 'hotels guest house lodge stay',
+  motel: 'hotels motel lodge stay',
+  hospital: 'hospitals hospital clinic medical',
+  clinic: 'hospitals clinic medical',
+  bus_station: 'transit bus station',
+  bus_stop: 'transit bus stop',
+  station: 'transit station metro railway',
+  subway_entrance: 'transit metro subway station'
+};
+
+const CATEGORY_SEARCH_QUERIES = {
+  fuel: 'petrol pumps near me',
+  hospitals: 'hospitals near me',
+  restaurants: 'restaurants near me',
+  hostels: 'hostels hotels near me',
+  transit: 'transit bus metro stations near me'
+};
+
+const getPrimarySearchWords = (query) => {
+  const words = (cleanIntentWords(query) || normalizeSearchText(query))
+    .split(/\s+/)
+    .filter((word) => word.length >= 2 && !SEARCH_AREA_WORDS.has(word));
+  if (/\bd\s*mart\b|d-mart|dmart/i.test(query)) return ['dmart'];
+  return words;
+};
+
+const getExpandedSearchRegexWords = (query) => {
+  const primaryWords = getPrimarySearchWords(query);
+  const expanded = primaryWords.flatMap((word) => SEARCH_BRAND_ALIASES[word] || [word]);
+  return [...new Set(expanded)].slice(0, 8).map(escapeOverpassRegex);
+};
+
+const isHyderabadPoiQuery = (query) => (
+  /\b(dmart|d\s*mart|supermarket|shop|store|mart|restaurant|restaurants|food|cafe|hotel|hotels|hostel|hostels|lodge|bus|bus stop|metro|station|transit|petrol|pump|fuel|hp|hpcl|gas|lpg|hospital|hospitals|clinic|temple|mandir|masjid|church|school|college|colleges|clg|clgs|cgl|cgls|ground|hmt|chintal|chinthal|hyderabad|secunderabad|telangana|medchal|kompally|kukatpally|kphb|idpl|balanagar|dulapally|maisammaguda|quthbullapur|jeedimetla)\b/i.test(query)
+);
+
+const escapeOverpassRegex = (value) => (
+  value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+);
+
+const buildOverpassPoiQuery = (query, centerOverride = null) => {
+  const [lat, lng] = centerOverride || getSearchCenterForQuery(query);
+  const words = getExpandedSearchRegexWords(query);
+  const nameRegex = words.length ? words.join('|') : '.*';
+  const radius = centerOverride
+    ? (/\b(transit|bus|metro|station)\b/i.test(query) ? 8500 : 6500)
+    : (/\b(dmart|d\s*mart|supermarket|shop|store|mart)\b/i.test(query)
+    ? 24000
+    : (/\b(hyderabad|secunderabad|telangana)\b/i.test(query) ? 22000 : 12000));
+
+  return `[out:json][timeout:8];
+(
+  nwr(around:${radius},${lat},${lng})["name"~"${nameRegex}",i];
+  nwr(around:${radius},${lat},${lng})["brand"~"${nameRegex}",i];
+  nwr(around:${radius},${lat},${lng})["operator"~"${nameRegex}",i];
+  nwr(around:${radius},${lat},${lng})["amenity"~"fuel|restaurant|cafe|fast_food|hospital|clinic|school|college|university|bus_station|place_of_worship",i];
+  nwr(around:${radius},${lat},${lng})["tourism"~"hotel|hostel|guest_house|motel",i];
+  nwr(around:${radius},${lat},${lng})["shop"~"supermarket|convenience|mall|department_store|general",i];
+  nwr(around:${radius},${lat},${lng})["leisure"~"sports_centre|pitch|park|stadium",i];
+  nwr(around:${radius},${lat},${lng})["public_transport"~"station|platform|stop_position",i];
+  nwr(around:${radius},${lat},${lng})["highway"="bus_stop"];
+  nwr(around:${radius},${lat},${lng})["railway"~"station|halt|subway_entrance",i];
+);
+out center tags 80;`;
+};
+
+const fetchJsonWithTimeout = async (url, options = {}, timeoutMs = 6500) => {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    if (!response.ok) throw new Error(`Request failed: ${response.status}`);
+    return response.json();
+  } finally {
+    window.clearTimeout(timer);
+  }
+};
 
 const getEditDistance = (a, b) => {
   if (!a.length) return b.length;
@@ -391,13 +535,29 @@ const getSearchScore = (query, text) => {
   const q = cleanIntentWords(query) || normalizeSearchText(query);
   const t = normalizeSearchText(text);
   if (!q) return 0;
-  if (t === q) return 100;
-  if (t.startsWith(q)) return 88;
-  if (t.includes(q)) return 72;
-
   const qWords = q.split(/\s+/);
   const tWords = t.split(/\s+/);
-  return qWords.reduce((score, qWord) => {
+  const normalizedTokens = qWords.map((word) => {
+    if (['clg', 'clgs', 'cgl', 'cgls', 'colleges'].includes(word)) return 'college';
+    if (['petrol', 'pump', 'pumps'].includes(word)) return 'fuel';
+    if (['temples', 'mandir'].includes(word)) return 'temple';
+    if (['hospitals', 'clinics'].includes(word)) return word.slice(0, -1);
+    if (['stops'].includes(word)) return 'stop';
+    return word;
+  });
+  const matchedTokens = normalizedTokens.filter((qWord) => (
+    tWords.some((tWord) => tWord === qWord || tWord.startsWith(qWord) || qWord.startsWith(tWord))
+  ));
+  const coverage = matchedTokens.length / Math.max(1, normalizedTokens.length);
+
+  if (t === q) return 100;
+  if (t.startsWith(q)) return 88;
+  if (t.includes(q)) return 72 + coverage * 18;
+  if (coverage === 1) return 86;
+  if (coverage >= 0.75) return 72;
+  if (coverage < 0.5 && normalizedTokens.length > 1) return 0;
+
+  return normalizedTokens.reduce((score, qWord) => {
     const bestDistance = Math.min(...tWords.map((tWord) => getEditDistance(qWord, tWord.slice(0, qWord.length))));
     return score + Math.max(0, 42 - bestDistance * 10);
   }, 0);
@@ -701,6 +861,7 @@ export default function App() {
   const [activeLocation, setActiveLocation] = useState(DEFAULT_ACTIVE_LOCATION);
   const [savedPlaces, setSavedPlaces] = useState([]);
   const [globalSuggestions, setGlobalSuggestions] = useState([]);
+  const [searchCenterOverride, setSearchCenterOverride] = useState(null);
   const [globalSearchLoading, setGlobalSearchLoading] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(false);
   const [mapStyle, setMapStyle] = useState('dark');
@@ -749,6 +910,7 @@ export default function App() {
 
   const clearSearchState = () => {
     setSearchQuery('');
+    setSearchCenterOverride(null);
     setGlobalSuggestions([]);
     setGlobalSearchLoading(false);
   };
@@ -787,8 +949,22 @@ export default function App() {
     }))
   ), [savedPlaces]);
 
+  const exactLocalSearchPlaces = useMemo(() => (
+    EXACT_LOCAL_SEARCH_KEYS.map((key) => {
+      const place = placesDatabase[key];
+      return {
+        key,
+        place,
+        text: `${place.name} ${place.address} ${place.type} ${SEARCH_ALIASES[key] || ''}`
+      };
+    })
+  ), []);
+
   const searchSuggestions = useMemo(() => {
     if (!searchQuery.trim()) return [];
+    const cleanedQuery = cleanIntentWords(searchQuery) || normalizeSearchText(searchQuery);
+    const queryWords = cleanedQuery.split(/\s+/).filter(Boolean);
+    const allowExactLocal = cleanedQuery.length >= 4 || queryWords.length >= 2;
 
     const localSuggestions = searchablePlaces
       .filter((item) => fuzzySearch(searchQuery, item.text))
@@ -797,11 +973,45 @@ export default function App() {
         source: 'local',
         score: getSearchScore(searchQuery, item.text)
       }))
+      .filter((item) => item.score > 0)
       .sort((a, b) => b.score - a.score)
-      .slice(0, 4);
+      .slice(0, 5);
 
-    return [...localSuggestions, ...globalSuggestions].slice(0, 7);
-  }, [globalSuggestions, searchQuery, searchablePlaces]);
+    const exactLocalSuggestions = allowExactLocal
+      ? exactLocalSearchPlaces
+          .map((item) => ({
+            ...item,
+            source: 'local',
+            score: getSearchScore(searchQuery, item.text)
+          }))
+          .filter((item) => item.score >= 70)
+      : [];
+
+    const primarySearchWords = getPrimarySearchWords(searchQuery);
+    const scoredGlobal = globalSuggestions
+      .map((item) => {
+        const typeAliases = SEARCH_TYPE_ALIASES[item.place.type] || '';
+        const text = `${item.place.name} ${item.place.address} ${item.place.type || ''} ${typeAliases}`;
+        const normalizedText = normalizeSearchText(text);
+        const primaryHits = primarySearchWords.filter((word) => {
+          const aliases = SEARCH_BRAND_ALIASES[word] || [word];
+          return aliases.some((alias) => normalizedText.includes(normalizeSearchText(alias)));
+        }).length;
+        const branchMatchBonus = primaryHits > 0 ? 22 + primaryHits * 10 : 0;
+        const distanceMeters = searchCenterOverride ? getDistanceMeters(searchCenterOverride, item.place.coords) : null;
+        const nearbyBonus = Number.isFinite(distanceMeters) ? Math.max(0, 34 - (distanceMeters / 1000) * 5) : 0;
+        return {
+          ...item,
+          distanceMeters,
+          score: getSearchScore(searchQuery, text) + branchMatchBonus + nearbyBonus
+        };
+      })
+      .filter((item) => item.score >= (primarySearchWords.length ? 38 : 45));
+
+    return [...exactLocalSuggestions, ...localSuggestions, ...scoredGlobal]
+      .sort((a, b) => (b.score - a.score) || (a.source === 'local' ? -1 : 1))
+      .slice(0, 7);
+  }, [exactLocalSearchPlaces, globalSuggestions, searchCenterOverride, searchQuery, searchablePlaces]);
 
   const routeSearchOptions = useMemo(() => {
     if (searchQuery.trim()) return searchSuggestions;
@@ -829,17 +1039,43 @@ export default function App() {
     const timer = setTimeout(async () => {
       setGlobalSearchLoading(true);
       try {
-        const response = await fetch(
-          `https://photon.komoot.io/api/?q=${encodeURIComponent(cleanedQuery)}&limit=5&lang=en`,
-          { signal: controller.signal }
-        );
-        if (!response.ok) throw new Error('Photon search failed');
-        const payload = await response.json();
-        const features = Array.isArray(payload.features) ? payload.features : [];
+        const localQueryHint = isHyderabadPoiQuery(searchQuery);
+        const searchCenter = searchCenterOverride || null;
+        const [searchLat, searchLng] = searchCenter || getSearchCenterForQuery(searchQuery);
+        const photonUrl = localQueryHint
+          ? `https://photon.komoot.io/api/?q=${encodeURIComponent(searchCenter ? cleanedQuery : `${cleanedQuery} Telangana India`)}&limit=8&lang=en&lat=${searchLat}&lon=${searchLng}`
+          : `https://photon.komoot.io/api/?q=${encodeURIComponent(cleanedQuery)}&limit=5&lang=en`;
+        const nominatimUrl = `https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&countrycodes=in&limit=8&q=${encodeURIComponent(localQueryHint ? `${cleanedQuery} Telangana India` : cleanedQuery)}`;
+        const overpassBody = buildOverpassPoiQuery(searchQuery, searchCenter);
+        const [photonResult, nominatimResult, overpassResult] = await Promise.allSettled([
+          fetch(photonUrl, { signal: controller.signal }).then((response) => {
+            if (!response.ok) throw new Error('Photon search failed');
+            return response.json();
+          }),
+          fetch(nominatimUrl, { signal: controller.signal }).then((response) => {
+            if (!response.ok) throw new Error('Nominatim search failed');
+            return response.json();
+          }),
+          localQueryHint
+            ? fetchJsonWithTimeout('https://overpass-api.de/api/interpreter', {
+                method: 'POST',
+                body: new URLSearchParams({ data: overpassBody })
+              }, 7000)
+            : Promise.resolve({ elements: [] })
+        ]);
 
-        setGlobalSuggestions(
-          features
-            .map((feature, index) => {
+        const photonFeatures = photonResult.status === 'fulfilled' && Array.isArray(photonResult.value.features)
+          ? photonResult.value.features
+          : [];
+        const nominatimFeatures = nominatimResult.status === 'fulfilled' && Array.isArray(nominatimResult.value)
+          ? nominatimResult.value
+          : [];
+        const overpassElements = overpassResult.status === 'fulfilled' && Array.isArray(overpassResult.value.elements)
+          ? overpassResult.value.elements
+          : [];
+
+        const photonSuggestions = photonFeatures
+          .map((feature, index) => {
               const [lng, lat] = feature.geometry?.coordinates || [];
               const props = feature.properties || {};
               if (typeof lat !== 'number' || typeof lng !== 'number') return null;
@@ -859,7 +1095,70 @@ export default function App() {
                 }
               };
             })
-            .filter(Boolean)
+          .filter(Boolean);
+
+        const nominatimSuggestions = nominatimFeatures
+          .map((item, index) => {
+            const lat = Number(item.lat);
+            const lng = Number(item.lon);
+            if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+            const address = item.address || {};
+            const name = item.name || address.amenity || address.leisure || address.road || item.display_name?.split(',')[0] || cleanedQuery;
+            return {
+              key: `nominatim-${item.osm_type || 'x'}-${item.osm_id || index}-${lat}-${lng}`,
+              source: 'nominatim',
+              score: 35 - index,
+              place: {
+                name,
+                coords: [lat, lng],
+                address: item.display_name || [address.suburb, address.city, address.state, address.country].filter(Boolean).join(', '),
+                temp: '--',
+                traffic: 'OpenStreetMap search result',
+                type: item.type || item.category || 'osm'
+              }
+            };
+          })
+          .filter(Boolean);
+
+        const overpassSuggestions = overpassElements
+          .map((item, index) => {
+            const tags = item.tags || {};
+            const lat = item.lat ?? item.center?.lat;
+            const lng = item.lon ?? item.center?.lon;
+            if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+            const name = tags.name || tags.brand || tags.operator || tags['addr:housename'];
+            if (!name) return null;
+            const type = tags.amenity || tags.tourism || tags.leisure || tags.highway || tags.railway || tags.public_transport || tags.shop || 'poi';
+            const address = [
+              tags['addr:housenumber'] && tags['addr:street'] ? `${tags['addr:housenumber']} ${tags['addr:street']}` : tags['addr:street'],
+              tags['addr:suburb'] || tags['addr:neighbourhood'] || tags.locality,
+              tags['addr:city'] || 'Hyderabad',
+              tags['addr:state'] || 'Telangana'
+            ].filter(Boolean).join(', ');
+            return {
+              key: `overpass-${item.type}-${item.id}-${lat}-${lng}`,
+              source: 'overpass',
+              score: 45 - index,
+              place: {
+                name,
+                coords: [lat, lng],
+                address: address || `${type}, Hyderabad, Telangana`,
+                temp: '--',
+                traffic: 'Hyderabad OpenStreetMap POI result',
+                type
+              }
+            };
+          })
+          .filter(Boolean);
+
+        const seen = new Set();
+        setGlobalSuggestions(
+          [...overpassSuggestions, ...photonSuggestions, ...nominatimSuggestions].filter((suggestion) => {
+            const key = `${normalizeSearchText(suggestion.place.name)}-${suggestion.place.coords.map((value) => value.toFixed(3)).join(',')}`;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          })
         );
       } catch (error) {
         if (error.name !== 'AbortError') {
@@ -876,7 +1175,7 @@ export default function App() {
       controller.abort();
       clearTimeout(timer);
     };
-  }, [searchQuery]);
+  }, [searchCenterOverride, searchQuery]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2634,9 +2933,35 @@ export default function App() {
     }, 3500);
   };
 
-  const handleCategoryClick = (category) => {
+  const handleCategoryClick = async (category) => {
     playClickSound();
-    triggerToast("Category Highlighted", `Showing local ${category} places near ${activeLocation.name}.`, false);
+    const query = CATEGORY_SEARCH_QUERIES[category] || `${category} Hyderabad`;
+    let origin = lastUserLocation;
+
+    if (!origin?.coords) {
+      triggerToast("Getting Location", `Using GPS to find ${category} near you.`, false);
+      try {
+        const position = await getGpsPosition();
+        const coords = [position.coords.latitude, position.coords.longitude];
+        origin = showUserLocation({
+          coords,
+          address: `${coords[0].toFixed(5)}, ${coords[1].toFixed(5)}`,
+          accuracy: position.coords.accuracy
+        }, { select: false });
+      } catch (error) {
+        setGlobalSuggestions([]);
+        triggerToast("GPS Needed", `${getGpsErrorMessage(error)} Tap the location button or allow GPS to search nearby ${category}.`, true);
+        return;
+      }
+    }
+
+    setRouteSearchTarget(null);
+    setMobileMode('place');
+    setMobileSheetOpen(true);
+    setGlobalSuggestions([]);
+    setSearchCenterOverride(origin.coords);
+    setSearchQuery(query);
+    triggerToast("Searching Nearby", `Finding ${category} near your location.`, false);
   };
 
   const handleSaveLocation = async () => {
@@ -2867,16 +3192,16 @@ export default function App() {
               <Menu size={20} />
             </button>
 
-            {/* Recenter Button (Ask Maps) */}
+            {/* Petrol pump search */}
             <button 
-              onClick={handleRecenter}
+              onClick={() => handleCategoryClick('fuel')}
               className="flex flex-col items-center group w-full px-1"
-              title="Recenter Map"
+              title="Find petrol pumps"
             >
               <div className="w-10 h-10 rounded-full bg-[#06b6d4]/10 border border-[#06b6d4]/30 hover:border-[#06b6d4] flex items-center justify-center text-[#06b6d4] transition-all group-hover:scale-105 shadow-md">
-                <Compass size={18} />
+                <Fuel size={18} />
               </div>
-              <span className="text-[9px] text-slate-400 mt-1 scale-90 group-hover:text-[#06b6d4] transition-colors text-center font-medium">Ask Maps</span>
+              <span className="text-[9px] text-slate-400 mt-1 scale-90 group-hover:text-[#06b6d4] transition-colors text-center font-medium">Petrol</span>
             </button>
 
             {/* Saved Places */}
@@ -2956,7 +3281,10 @@ export default function App() {
                 type="text" 
                 placeholder="Search SpiderMaps" 
                 value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
+                onChange={(e) => {
+                  setSearchCenterOverride(null);
+                  setSearchQuery(e.target.value);
+                }}
                 className="bg-transparent text-slate-100 placeholder-slate-400 font-sans text-sm focus:outline-none w-full"
               />
             </div>
@@ -3067,22 +3395,24 @@ export default function App() {
               <span>Restaurants</span>
             </button>
             <button 
-              onClick={() => handleCategoryClick('hotels')}
+              onClick={() => handleCategoryClick('hostels')}
               className="flex items-center gap-2 px-4 py-2 bg-[#0b132b] hover:bg-[#ef4444] hover:text-white text-slate-200 rounded-full border border-[#06b6d4]/20 text-xs shadow-md font-medium transition-all"
             >
-              <span>Hotels</span>
+              <span>Hostels</span>
             </button>
             <button 
-              onClick={() => handleCategoryClick('things to do')}
+              onClick={() => handleCategoryClick('fuel')}
               className="flex items-center gap-2 px-4 py-2 bg-[#0b132b] hover:bg-[#ef4444] hover:text-white text-slate-200 rounded-full border border-[#06b6d4]/20 text-xs shadow-md font-medium transition-all"
             >
-              <span>Things to do</span>
+              <Fuel size={13} />
+              <span>Petrol Pumps</span>
             </button>
             <button 
-              onClick={() => handleCategoryClick('museums')}
+              onClick={() => handleCategoryClick('hospitals')}
               className="flex items-center gap-2 px-4 py-2 bg-[#0b132b] hover:bg-[#ef4444] hover:text-white text-slate-200 rounded-full border border-[#06b6d4]/20 text-xs shadow-md font-medium transition-all"
             >
-              <span>Museums</span>
+              <Plus size={13} />
+              <span>Hospitals</span>
             </button>
             <button 
               onClick={() => handleCategoryClick('transit')}
@@ -3129,7 +3459,10 @@ export default function App() {
               type="text"
               placeholder={routeSearchTarget === 'from' ? 'Search start location' : routeSearchTarget === 'via' ? 'Search via place' : routeSearchTarget === 'to' ? 'Search destination' : 'Search here'}
               value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
+              onChange={(e) => {
+                setSearchCenterOverride(null);
+                setSearchQuery(e.target.value);
+              }}
               className="min-w-0 flex-1 bg-transparent text-base font-medium text-slate-100 placeholder:text-slate-300 focus:outline-none"
             />
             <button type="button" onClick={routeSearchTarget === 'from' ? useGpsRouteStart : () => triggerToast("Choose Place", "Search and select a place from the list.", true)} className="grid h-10 w-10 shrink-0 place-items-center rounded-full text-slate-100" title="Get your location">
@@ -3171,19 +3504,19 @@ export default function App() {
 
           {!routeSearchTarget && (
           <div className="pointer-events-auto flex gap-2 overflow-x-auto pb-1 scrollbar-none mobile-chip-row">
-            <button onClick={handleRecenter} className="flex shrink-0 items-center gap-2 rounded-full border border-[#60a5fa]/60 bg-[#2f3033]/96 px-4 py-2 text-sm font-bold text-slate-100 shadow-xl">
-              <Compass size={16} />
-              Ask Maps
+            <button onClick={() => handleCategoryClick('fuel')} className="flex shrink-0 items-center gap-2 rounded-full border border-[#60a5fa]/60 bg-[#2f3033]/96 px-4 py-2 text-sm font-bold text-slate-100 shadow-xl">
+              <Fuel size={16} />
+              Petrol Pumps
             </button>
-            <button onClick={handleMobileDirections} className="flex shrink-0 items-center gap-2 rounded-full bg-[#2f3033]/96 px-4 py-2 text-sm font-bold text-slate-100 shadow-xl">
-              <Car size={16} />
-              Directions
+            <button onClick={() => handleCategoryClick('hospitals')} className="flex shrink-0 items-center gap-2 rounded-full bg-[#2f3033]/96 px-4 py-2 text-sm font-bold text-slate-100 shadow-xl">
+              <Plus size={16} />
+              Hospitals
             </button>
             <button onClick={() => handleCategoryClick('restaurants')} className="shrink-0 rounded-full bg-[#2f3033]/96 px-4 py-2 text-sm font-bold text-slate-100 shadow-xl">
               Restaurants
             </button>
-            <button onClick={() => handleCategoryClick('hotels')} className="shrink-0 rounded-full bg-[#2f3033]/96 px-4 py-2 text-sm font-bold text-slate-100 shadow-xl">
-              Hotels
+            <button onClick={() => handleCategoryClick('hostels')} className="shrink-0 rounded-full bg-[#2f3033]/96 px-4 py-2 text-sm font-bold text-slate-100 shadow-xl">
+              Hostels
             </button>
             <button onClick={() => handleCategoryClick('transit')} className="shrink-0 rounded-full bg-[#2f3033]/96 px-4 py-2 text-sm font-bold text-slate-100 shadow-xl">
               Transit
@@ -3464,6 +3797,13 @@ export default function App() {
             title="Get your location"
           >
             <Crosshair size={18} />
+          </button>
+          <button
+            onClick={handleRecenter}
+            className="w-10 h-10 rounded-lg bg-[#0b132b] hover:bg-[#06b6d4] border border-[#06b6d4]/30 hover:border-[#06b6d4] text-[#06b6d4] hover:text-[#030712] flex items-center justify-center shadow-xl transition-all"
+            title="Recenter Hyderabad"
+          >
+            <Compass size={18} />
           </button>
 
         </div>
