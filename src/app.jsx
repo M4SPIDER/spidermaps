@@ -130,6 +130,15 @@ const isRouteDestinationText = (value) => {
     && text !== 'my gps location';
 };
 
+const isGpsStartText = (value) => {
+  const text = normalizeSearchText(value || '');
+  return !text
+    || text === 'my gps location'
+    || text === 'your location'
+    || text === 'approximate location'
+    || text === 'current location';
+};
+
 const SEARCH_ALIASES = {
   work: 'office job quthbullapur quthbulpur quthbulapur sudershan reddy nagar',
   home: 'house kompally kompali kompaly sri chaitanya school',
@@ -428,6 +437,12 @@ const getEstimatedRouteMinutes = (distanceKm, mode) => (
   Math.max(1, Math.round((distanceKm / mode.speedFallbackKmh) * 60))
 );
 
+const getNearestRouteDistance = (point, routeCoordinates = []) => (
+  routeCoordinates.reduce((nearest, routePoint) => (
+    Math.min(nearest, getDistanceMeters(point, routePoint))
+  ), Number.POSITIVE_INFINITY)
+);
+
 const makeCirclePolygon = ([lat, lng], radiusMeters, steps = 48) => {
   const coords = [];
   const earthRadius = 6371000;
@@ -665,10 +680,13 @@ export default function App() {
   const [routeStartKey, setRouteStartKey] = useState('gps');
   const [routeCustomStartPlace, setRouteCustomStartPlace] = useState(null);
   const [routeFromQuery, setRouteFromQuery] = useState('My GPS location');
+  const [lastUserLocation, setLastUserLocation] = useState(null);
   const [routeToQuery, setRouteToQuery] = useState('');
   const [routeSearchTarget, setRouteSearchTarget] = useState(null);
   const [routeActive, setRouteActive] = useState(false);
   const [routeMeta, setRouteMeta] = useState(null);
+  const [routeAlternatives, setRouteAlternatives] = useState([]);
+  const [selectedRouteId, setSelectedRouteId] = useState(null);
   const [navTelemetry, setNavTelemetry] = useState({ speedKmh: 0, coveredKm: 0 });
   const [mobileSheetOpen, setMobileSheetOpen] = useState(true);
   const [mobileMode, setMobileMode] = useState('place');
@@ -688,9 +706,11 @@ export default function App() {
   const markersLayerGroup = useRef([]);
   const constructionLayerGroup = useRef([]);
   const userLayerGroup = useRef([]);
+  const alternativeRouteMarkersGroup = useRef([]);
   const routeLineCoordinatesRef = useRef([]);
   const lastRouteEndpointsRef = useRef(null);
   const navTelemetryRef = useRef({ lastCoords: null, coveredMeters: 0 });
+  const navRerouteRef = useRef({ lastRerouteAt: 0, offRouteHits: 0, currentStepIndex: 0 });
   const activeBaseStyleRef = useRef(mapStyle);
   const audioCtxRef = useRef(null);
   const hazardWatchIdRef = useRef(null);
@@ -722,6 +742,16 @@ export default function App() {
 
     return [...localSuggestions, ...globalSuggestions].slice(0, 7);
   }, [globalSuggestions, searchQuery, searchablePlaces]);
+
+  const routeSearchOptions = useMemo(() => {
+    if (searchQuery.trim()) return searchSuggestions;
+
+    return searchablePlaces.slice(0, 7).map((item, index) => ({
+      ...item,
+      source: 'quick',
+      score: 20 - index
+    }));
+  }, [searchQuery, searchSuggestions, searchablePlaces]);
 
   const routeStartPlace = useMemo(() => (
     savedPlaces.find((place) => place.id === routeStartKey) || null
@@ -989,10 +1019,64 @@ export default function App() {
       source: 'route-line',
       paint: {
         'line-color': '#ef4444',
-        'line-width': 5,
+        'line-width': 6,
         'line-opacity': 0.92
       },
       layout: { 'line-cap': 'round', 'line-join': 'round' }
+    });
+  };
+
+  const renderAlternativeRoutes = (alternatives = []) => {
+    const map = leafletMapInstance.current;
+    if (!map) return;
+    clearMapLibreLayer('route-alternatives');
+    alternativeRouteMarkersGroup.current.forEach((marker) => marker.remove());
+    alternativeRouteMarkersGroup.current = [];
+    const features = alternatives
+      .filter((route) => route.coordinates?.length > 1)
+      .map((route) => ({
+        type: 'Feature',
+        geometry: { type: 'LineString', coordinates: route.coordinates.map(toLngLat) },
+        properties: { id: route.id, color: route.color || '#4f46e5' }
+      }));
+
+    if (!features.length) return;
+
+    map.addSource('route-alternatives', {
+      type: 'geojson',
+      data: { type: 'FeatureCollection', features }
+    });
+    map.addLayer({
+      id: 'route-alternatives',
+      type: 'line',
+      source: 'route-alternatives',
+      paint: {
+        'line-color': ['get', 'color'],
+        'line-width': 4,
+        'line-opacity': 0.72
+      },
+      layout: { 'line-cap': 'round', 'line-join': 'round' }
+    });
+
+    alternatives.forEach((route) => {
+      if (!route.coordinates?.length) return;
+      const midpoint = route.coordinates[Math.floor(route.coordinates.length / 2)];
+      const el = document.createElement('button');
+      el.type = 'button';
+      el.className = 'alternative-route-label';
+      el.style.setProperty('--route-color', route.color || '#4f46e5');
+      el.innerHTML = `
+        <strong>${route.timeDeltaLabel || route.label}</strong>
+        <span>${route.distanceDeltaLabel || `${route.distanceKm.toFixed(1)} km`}</span>
+      `;
+      el.addEventListener('click', (event) => {
+        event.stopPropagation();
+        handleSelectRouteAlternative(route);
+      });
+      const marker = new maplibregl.Marker({ element: el, anchor: 'center' })
+        .setLngLat(toLngLat(midpoint))
+        .addTo(map);
+      alternativeRouteMarkersGroup.current.push(marker);
     });
   };
 
@@ -1228,6 +1312,7 @@ export default function App() {
     }
 
     navTelemetryRef.current = { lastCoords: null, coveredMeters: 0 };
+    navRerouteRef.current = { lastRerouteAt: 0, offRouteHits: 0, currentStepIndex: 0 };
     const watchId = navigator.geolocation.watchPosition(
       (position) => {
         const coords = [position.coords.latitude, position.coords.longitude];
@@ -1253,20 +1338,53 @@ export default function App() {
           const liveSpeed = speedKmh > 3 ? speedKmh : selectedMode.speedFallbackKmh;
           const remainingMinutes = Math.max(1, Math.round((remainingKm / liveSpeed) * 60));
           const fuelLiters = selectedMode.fuelKmPerLiter ? Math.max(0.1, remainingKm / selectedMode.fuelKmPerLiter) : 0;
+          const routeDistance = getNearestRouteDistance(coords, routeLineCoordinatesRef.current);
+          const now = Date.now();
+
+          if (Number.isFinite(routeDistance) && routeDistance > 90) {
+            navRerouteRef.current.offRouteHits += 1;
+          } else {
+            navRerouteRef.current.offRouteHits = 0;
+          }
+
+          if (
+            navRerouteRef.current.offRouteHits >= 2
+            && now - navRerouteRef.current.lastRerouteAt > 15000
+          ) {
+            navRerouteRef.current.offRouteHits = 0;
+            rerouteFromCurrentPosition(coords);
+          }
 
           setRouteMeta((current) => {
             if (!current) return current;
-            const nearestStep = current.steps
-              ?.filter((step) => step.coords)
-              .map((step) => ({ ...step, metersAway: getDistanceMeters(coords, step.coords) }))
+            const stepsWithCoords = current.steps?.filter((step) => step.coords) || [];
+            const currentStepIndex = navRerouteRef.current.currentStepIndex || 0;
+            const upcomingStep = stepsWithCoords
+              .slice(currentStepIndex)
+              .map((step, offset) => ({
+                ...step,
+                index: currentStepIndex + offset,
+                metersAway: getDistanceMeters(coords, step.coords)
+              }))
               .sort((a, b) => a.metersAway - b.metersAway)[0];
+
+            if (upcomingStep && upcomingStep.metersAway < 35) {
+              navRerouteRef.current.currentStepIndex = Math.min(upcomingStep.index + 1, stepsWithCoords.length - 1);
+            }
+
+            const nextStep = stepsWithCoords[navRerouteRef.current.currentStepIndex] || upcomingStep;
+            const stepDistance = nextStep?.coords ? getDistanceMeters(coords, nextStep.coords) : 0;
+            const liveInstruction = nextStep
+              ? nextStep.instruction.replace(/in \d+ m/, `in ${Math.max(10, Math.round(stepDistance / 10) * 10)} m`)
+              : current.instruction;
 
             return {
               ...current,
               distance: `${remainingKm.toFixed(1)} km`,
               duration: `${remainingMinutes} min`,
               fuel: `${fuelLiters.toFixed(1)} L`,
-              instruction: nearestStep?.instruction || current.instruction
+              instruction: liveInstruction,
+              offRouteDistance: Number.isFinite(routeDistance) ? routeDistance : null
             };
           });
         }
@@ -1282,6 +1400,10 @@ export default function App() {
 
   const handleSelectLocation = (location) => {
     playClickSound();
+    if (mobileMode === 'nav') {
+      rerouteNavigationToPlace(location);
+      return;
+    }
     setActiveLocation(location);
     setMobileSheetOpen(true);
     setMobileMode('place');
@@ -1361,16 +1483,20 @@ export default function App() {
     setRouteToQuery(isRouteDestination(activeLocation) ? activeLocation.name : '');
   }, [activeLocation]);
 
-  const drawRouteBetween = async (start, end, label = "destination", modeId = travelMode, startLabel = "Selected start") => {
+  const drawRouteBetween = async (start, end, label = "destination", modeId = travelMode, startLabel = "Selected start", waypoint = null) => {
     const map = leafletMapInstance.current;
-    if (!map || !leafletLoaded) return;
+    if (!map || !leafletLoaded) return null;
 
     clearMapLibreLayer('route-line');
-    lastRouteEndpointsRef.current = { start, end, label, startLabel };
+    lastRouteEndpointsRef.current = { start, end, label, startLabel, waypoint };
     const selectedMode = TRAVEL_MODES.find((mode) => mode.id === modeId) || TRAVEL_MODES[0];
+    const routeSummary = waypoint
+      ? `${startLabel} to ${label} via ${waypoint.name}`
+      : `${startLabel} to ${label}`;
 
-    const drawRouteLine = (routeCoordinates) => {
+    const drawRouteLine = (routeCoordinates, alternatives = []) => {
       routeLineCoordinatesRef.current = routeCoordinates;
+      renderAlternativeRoutes(alternatives);
       renderRouteLine(routeCoordinates);
       const bounds = routeCoordinates.reduce(
         (box, coord) => box.extend(toLngLat(coord)),
@@ -1380,15 +1506,58 @@ export default function App() {
     };
 
     try {
-      const routeUrl = `https://router.project-osrm.org/route/v1/${selectedMode.osrmProfile}/${start[1]},${start[0]};${end[1]},${end[0]}?overview=full&geometries=geojson&steps=true`;
+      const routePoints = waypoint
+        ? `${start[1]},${start[0]};${waypoint.coords[1]},${waypoint.coords[0]};${end[1]},${end[0]}`
+        : `${start[1]},${start[0]};${end[1]},${end[0]}`;
+      const routeUrl = `https://router.project-osrm.org/route/v1/${selectedMode.osrmProfile}/${routePoints}?overview=full&geometries=geojson&steps=true&alternatives=true`;
       const response = await fetch(routeUrl);
       if (!response.ok) throw new Error('OSRM route request failed');
       const data = await response.json();
       const route = data.routes?.[0];
       if (!route) throw new Error('No OSRM route returned');
 
+      let alternativeRoutes = (data.routes || [])
+        .map((candidate, index) => {
+          const coordinates = candidate.geometry.coordinates.map(([lng, lat]) => [lat, lng]);
+          const distanceKmValue = candidate.distance / 1000;
+          const minutesValue = getEstimatedRouteMinutes(distanceKmValue, selectedMode);
+          const fuelValue = selectedMode.fuelKmPerLiter ? Math.max(0.1, distanceKmValue / selectedMode.fuelKmPerLiter) : 0;
+          return {
+            id: `route-${index}`,
+            index,
+            coordinates,
+            distanceKm: distanceKmValue,
+            durationMinutes: minutesValue,
+            fuelLiters: fuelValue,
+            label: index === 0 ? 'Fastest route' : `Alternative ${index + 1}`,
+            steps: candidate.legs?.flatMap((leg) => leg.steps || []) || []
+          };
+        });
+      const primaryRoute = alternativeRoutes[0];
+      if (primaryRoute) {
+        const alternativeColors = ['#ef4444', '#2563eb', '#7c3aed', '#0891b2', '#f97316', '#16a34a'];
+        alternativeRoutes = alternativeRoutes.map((candidate) => {
+          const minuteDiff = Math.round(candidate.durationMinutes - primaryRoute.durationMinutes);
+          const distanceDiff = candidate.distanceKm - primaryRoute.distanceKm;
+          const timeDeltaLabel = minuteDiff === 0
+            ? 'Same ETA'
+            : `${Math.abs(minuteDiff)} min ${minuteDiff > 0 ? 'slower' : 'faster'}`;
+          const distanceDeltaLabel = Math.abs(distanceDiff) < 0.1
+            ? `${candidate.distanceKm.toFixed(1)} km`
+            : `${distanceDiff > 0 ? '+' : '-'}${Math.abs(distanceDiff).toFixed(1)} km`;
+          return {
+            ...candidate,
+            color: alternativeColors[candidate.index % alternativeColors.length],
+            timeDeltaLabel,
+            distanceDeltaLabel
+          };
+        });
+      }
+      setRouteAlternatives(alternativeRoutes);
+      setSelectedRouteId(alternativeRoutes[0]?.id || null);
+
       const routeCoordinates = route.geometry.coordinates.map(([lng, lat]) => [lat, lng]);
-      drawRouteLine(routeCoordinates);
+      drawRouteLine(routeCoordinates, alternativeRoutes.slice(1));
       const distanceKm = route.distance / 1000;
       const durationMinutes = getEstimatedRouteMinutes(distanceKm, selectedMode);
       const fuelLiters = selectedMode.fuelKmPerLiter ? Math.max(0.1, distanceKm / selectedMode.fuelKmPerLiter) : 0;
@@ -1403,7 +1572,8 @@ export default function App() {
         source: selectedMode.label,
         routeFrom: startLabel,
         routeTo: label,
-        routeSummary: `${startLabel} to ${label}`,
+        routeVia: waypoint?.name || null,
+        routeSummary,
         estimateLabel: `${selectedMode.label} estimate`,
         instruction: formatRouteInstruction(firstActionStep),
         nextInstruction: firstActionStep?.name || label,
@@ -1421,12 +1591,17 @@ export default function App() {
       } else {
         triggerToast("Navigation Started", `${selectedMode.label} route generated to ${label}.`, false);
       }
+      return { distanceKm, durationMinutes, fuelLiters, constructionHits };
     } catch {
-      const fallbackRoute = [start, end];
-      const distanceKm = getDistanceMeters(start, end) / 1000;
+      const fallbackRoute = waypoint ? [start, waypoint.coords, end] : [start, end];
+      const distanceKm = fallbackRoute
+        .slice(1)
+        .reduce((total, coord, index) => total + getDistanceMeters(fallbackRoute[index], coord), 0) / 1000;
       const durationMinutes = getEstimatedRouteMinutes(distanceKm, selectedMode);
       const fuelLiters = selectedMode.fuelKmPerLiter ? Math.max(0.1, distanceKm / selectedMode.fuelKmPerLiter) : 0;
       const constructionHits = getConstructionHitsForRoute(fallbackRoute);
+      setRouteAlternatives([]);
+      setSelectedRouteId(null);
       drawRouteLine(fallbackRoute);
       setRouteMeta({
         distance: `${distanceKm.toFixed(1)} km`,
@@ -1435,7 +1610,8 @@ export default function App() {
         source: `${selectedMode.label} estimate`,
         routeFrom: startLabel,
         routeTo: label,
-        routeSummary: `${startLabel} to ${label}`,
+        routeVia: waypoint?.name || null,
+        routeSummary,
         estimateLabel: `${selectedMode.label} estimate`,
         instruction: `Go straight towards ${label}`,
         nextInstruction: label,
@@ -1444,19 +1620,136 @@ export default function App() {
       });
       setRouteActive(true);
       triggerToast("Navigation Started", "Live routing was unavailable, so a direct estimate was used.", true);
+      return { distanceKm, durationMinutes, fuelLiters, constructionHits };
     }
   };
 
-  const handleDrawRoute = async (destination = activeLocation, startOverride) => {
+  const rerouteFromCurrentPosition = async (coords) => {
+    const destination = lastRouteEndpointsRef.current?.end;
+    const label = lastRouteEndpointsRef.current?.label;
+    if (!destination || !label) return false;
+
+    navRerouteRef.current.lastRerouteAt = Date.now();
+    const currentLocation = {
+      name: 'Current location',
+      coords,
+      address: `${coords[0].toFixed(5)}, ${coords[1].toFixed(5)}`,
+      temp: "--",
+      traffic: "Live GPS reroute point",
+      type: "gps"
+    };
+    setLastUserLocation(currentLocation);
+    if (userLayerGroup.current) {
+      userLayerGroup.current.forEach((marker) => marker.remove());
+      userLayerGroup.current = [];
+      const userIcon = document.createElement('div');
+      userIcon.className = 'gps-marker';
+      userIcon.innerHTML = '<span></span>';
+      const marker = new maplibregl.Marker({ element: userIcon, anchor: 'center' })
+        .setLngLat(toLngLat(coords))
+        .setPopup(new maplibregl.Popup({ offset: 18 }).setText('Current location'))
+        .addTo(leafletMapInstance.current);
+      userLayerGroup.current.push(marker);
+    }
+    await drawRouteBetween(coords, destination, label, travelMode, 'Current location');
+    setRouteFromQuery('Current location');
+    triggerToast("Rerouting", "Wrong route detected. Corrected from your current GPS location.", true);
+    return true;
+  };
+
+  const handleSelectRouteAlternative = (alternative) => {
+    if (!alternative?.coordinates?.length) return;
+    playClickSound();
+    routeLineCoordinatesRef.current = alternative.coordinates;
+    setSelectedRouteId(alternative.id);
+    renderAlternativeRoutes(routeAlternatives.filter((route) => route.id !== alternative.id));
+    renderRouteLine(alternative.coordinates);
+
+    const selectedMode = TRAVEL_MODES.find((mode) => mode.id === travelMode) || TRAVEL_MODES[0];
+    const constructionHits = getConstructionHitsForRoute(alternative.coordinates);
+    const firstActionStep = alternative.steps.find((step) => step.maneuver?.type !== 'depart') || alternative.steps[0];
+
+    setRouteMeta((current) => ({
+      ...current,
+      distance: `${alternative.distanceKm.toFixed(1)} km`,
+      duration: `${alternative.durationMinutes} min`,
+      fuel: `${alternative.fuelLiters.toFixed(1)} L`,
+      source: selectedMode.label,
+      estimateLabel: alternative.label,
+      instruction: formatRouteInstruction(firstActionStep),
+      nextInstruction: firstActionStep?.name || current?.routeTo || 'destination',
+      steps: alternative.steps.map((step) => ({
+        instruction: formatRouteInstruction(step),
+        distance: step.distance || 0,
+        coords: step.maneuver?.location ? [step.maneuver.location[1], step.maneuver.location[0]] : null,
+        name: step.name || ''
+      })).slice(0, 12),
+      constructionHits
+    }));
+    setRouteAlternatives((current) => [
+      alternative,
+      ...current.filter((route) => route.id !== alternative.id)
+    ]);
+    triggerToast(alternative.label, `${alternative.durationMinutes} min, ${alternative.distanceKm.toFixed(1)} km selected.`, false);
+  };
+
+  const rerouteNavigationToPlace = async (place) => {
+    if (!isRouteDestination(place) || mobileMode !== 'nav') return false;
+
+    const previousMinutes = Number.parseFloat(routeMeta?.duration || '');
+    const currentDestination = lastRouteEndpointsRef.current?.end;
+    const currentDestinationLabel = lastRouteEndpointsRef.current?.label || routeMeta?.routeTo;
+    const liveStart = navTelemetryRef.current.lastCoords
+      || lastUserLocation?.coords
+      || lastRouteEndpointsRef.current?.start;
+
+    if (!liveStart || !currentDestination || !currentDestinationLabel) {
+      triggerToast("Route Start Missing", "Use GPS once or choose a start before changing the route.", true);
+      setMobileMode('route');
+      setMobileSheetOpen(true);
+      return false;
+    }
+
+    const startLabel = navTelemetryRef.current.lastCoords
+      ? 'Current location'
+      : (lastUserLocation?.name || lastRouteEndpointsRef.current?.startLabel || 'Selected start');
+
+    setRouteToQuery(currentDestinationLabel);
+    setSearchQuery('');
+    const nextRoute = await drawRouteBetween(liveStart, currentDestination, currentDestinationLabel, travelMode, startLabel, place);
+    setMobileMode('nav');
+    setMobileSheetOpen(false);
+    setMobileNavMenuOpen(false);
+    setMobileRecenterExpanded(false);
+
+    if (nextRoute && Number.isFinite(previousMinutes)) {
+      const diff = Math.round(nextRoute.durationMinutes - previousMinutes);
+      if (diff === 0) {
+        triggerToast("Route Changed", `Via ${place.name} is about the same ETA.`, false);
+      } else if (diff < 0) {
+        triggerToast("Faster Route", `Via ${place.name} is about ${Math.abs(diff)} min faster.`, false);
+      } else {
+        triggerToast("Slower Route", `Via ${place.name} is about ${diff} min slower.`, true);
+      }
+    } else {
+      triggerToast("Route Changed", `Navigation to ${currentDestinationLabel} now goes via ${place.name}.`, false);
+    }
+
+    return true;
+  };
+
+  const handleDrawRoute = async (destinationArg = activeLocation, startOverride) => {
     playClickSound();
     if (!leafletMapInstance.current) return false;
+
+    const destination = destinationArg?.coords ? destinationArg : activeLocation;
 
     if (!isRouteDestination(destination)) {
       triggerToast("Choose Destination", "Search or click a destination before starting directions.", true);
       return false;
     }
 
-    const hasExplicitStart = arguments.length > 1;
+    const hasExplicitStart = startOverride !== undefined;
     const stateStartPlace = routeStartKey === 'custom' ? routeCustomStartPlace : routeStartPlace;
     const startPlace = hasExplicitStart ? startOverride : (routeStartKey !== 'gps' ? stateStartPlace : null);
 
@@ -1487,6 +1780,24 @@ export default function App() {
       return false;
     }
 
+    if (hasExplicitStart && startOverride === null && lastUserLocation) {
+      if (userLayerGroup.current) {
+        userLayerGroup.current.forEach((marker) => marker.remove());
+        userLayerGroup.current = [];
+        const userIcon = document.createElement('div');
+        userIcon.className = 'gps-marker';
+        userIcon.innerHTML = '<span></span>';
+        const marker = new maplibregl.Marker({ element: userIcon, anchor: 'center' })
+          .setLngLat(toLngLat(lastUserLocation.coords))
+          .setPopup(new maplibregl.Popup({ offset: 18 }).setText(lastUserLocation.name))
+          .addTo(leafletMapInstance.current);
+        userLayerGroup.current.push(marker);
+      }
+      setRouteFromQuery(lastUserLocation.name);
+      await drawRouteBetween(lastUserLocation.coords, destination.coords, destination.name, travelMode, lastUserLocation.name);
+      return true;
+    }
+
     if (!navigator.geolocation) {
       triggerToast("Choose Start", "GPS is unavailable. Pick a start location from the selector.", true);
       return false;
@@ -1496,6 +1807,16 @@ export default function App() {
     try {
       const position = await getGpsPosition();
       const start = [position.coords.latitude, position.coords.longitude];
+      const gpsStartLocation = {
+        name: 'Your Location',
+        coords: start,
+        address: `${start[0].toFixed(5)}, ${start[1].toFixed(5)}`,
+        temp: "--",
+        traffic: position.coords.accuracy ? `Current GPS position selected, accuracy ${Math.round(position.coords.accuracy)} m` : "Current GPS position selected",
+        type: "gps"
+      };
+      setLastUserLocation(gpsStartLocation);
+      setRouteFromQuery(gpsStartLocation.name);
       if (userLayerGroup.current) {
         userLayerGroup.current.forEach((marker) => marker.remove());
         userLayerGroup.current = [];
@@ -1508,7 +1829,7 @@ export default function App() {
           .addTo(leafletMapInstance.current);
         userLayerGroup.current.push(marker);
       }
-      await drawRouteBetween(start, destination.coords, destination.name, travelMode, 'My GPS location');
+      await drawRouteBetween(start, destination.coords, destination.name, travelMode, gpsStartLocation.name);
       return true;
     } catch (error) {
       try {
@@ -1519,6 +1840,8 @@ export default function App() {
         return true;
       } catch {
         triggerToast("GPS Failed", `${getGpsErrorMessage(error)} Pick a saved start location if GPS is unavailable.`, true);
+        setMobileMode('route');
+        setMobileSheetOpen(true);
         return false;
       }
     }
@@ -1527,26 +1850,40 @@ export default function App() {
   const handleClearRoute = () => {
     playClickSound();
     routeLineCoordinatesRef.current = [];
+    lastRouteEndpointsRef.current = null;
+    navRerouteRef.current = { lastRerouteAt: 0, offRouteHits: 0, currentStepIndex: 0 };
     clearMapLibreLayer('route-line');
+    clearMapLibreLayer('route-alternatives');
+    alternativeRouteMarkersGroup.current.forEach((marker) => marker.remove());
+    alternativeRouteMarkersGroup.current = [];
     if (userLayerGroup.current) {
       userLayerGroup.current.forEach((marker) => marker.remove());
       userLayerGroup.current = [];
     }
     setRouteActive(false);
     setRouteMeta(null);
+    setRouteAlternatives([]);
+    setSelectedRouteId(null);
     triggerToast("Route Cleared", "Active map route lines have been removed.", false);
   };
 
   const handleCloseMobileSheet = () => {
     playClickSound();
     routeLineCoordinatesRef.current = [];
+    lastRouteEndpointsRef.current = null;
+    navRerouteRef.current = { lastRerouteAt: 0, offRouteHits: 0, currentStepIndex: 0 };
     clearMapLibreLayer('route-line');
+    clearMapLibreLayer('route-alternatives');
+    alternativeRouteMarkersGroup.current.forEach((marker) => marker.remove());
+    alternativeRouteMarkersGroup.current = [];
     if (userLayerGroup.current) {
       userLayerGroup.current.forEach((marker) => marker.remove());
       userLayerGroup.current = [];
     }
     setRouteActive(false);
     setRouteMeta(null);
+    setRouteAlternatives([]);
+    setSelectedRouteId(null);
     setActiveLocation(DEFAULT_ACTIVE_LOCATION);
     setSearchQuery('');
     setRouteSearchTarget(null);
@@ -1563,7 +1900,7 @@ export default function App() {
       return;
     }
     const startPlace = mobileMode === 'route'
-      ? (routeFromQuery.trim() && normalizeSearchText(routeFromQuery) !== 'my gps location' ? resolvePlaceFromText(routeFromQuery, null) : null)
+      ? (!isGpsStartText(routeFromQuery) ? resolvePlaceFromText(routeFromQuery, null) : null)
       : routeCustomStartPlace;
     setActiveLocation(destination);
     if (startPlace) {
@@ -1573,7 +1910,7 @@ export default function App() {
     } else if (mobileMode === 'route') {
       setRouteCustomStartPlace(null);
       setRouteStartKey('gps');
-      setRouteFromQuery('My GPS location');
+      setRouteFromQuery(lastUserLocation?.name || 'My GPS location');
     }
     setRouteToQuery(destination.name);
     setSearchQuery('');
@@ -1598,7 +1935,7 @@ export default function App() {
     const destination = !isRouteDestination(nextDestination) ? resolvePlaceFromText(routeToQuery, null) : nextDestination;
     if (!isRouteDestination(destination)) {
       triggerToast("Choose Destination", "Search a destination first.", true);
-      return;
+      return false;
     }
 
     setActiveLocation(destination);
@@ -1609,16 +1946,16 @@ export default function App() {
       setRouteStartKey('custom');
       await drawRouteBetween(nextStart.coords, destination.coords, destination.name, travelMode, nextStart.name);
       triggerToast("Route Updated", `${nextStart.name} to ${destination.name}.`, false);
-      return;
+      return true;
     }
 
     if (!forceGpsStart && routeStartKey !== 'gps' && routeStartPlace) {
       await drawRouteBetween(routeStartPlace.coords, destination.coords, destination.name, travelMode, routeStartPlace.name);
       triggerToast("Route Updated", `${routeStartPlace.name} to ${destination.name}.`, false);
-      return;
+      return true;
     }
 
-    await handleDrawRoute(destination, null);
+    return handleDrawRoute(destination, null);
   };
 
   const handleRouteSearchSelect = async (place) => {
@@ -1632,7 +1969,47 @@ export default function App() {
     if (routeSearchTarget === 'from') {
       setRouteSearchTarget(null);
       setRouteFromQuery(place.name);
-      await refreshRouteFromEditor(place, activeLocation);
+      const routeReady = await refreshRouteFromEditor(place, activeLocation);
+      if (!routeReady) {
+        setMobileMode('route');
+        setMobileSheetOpen(true);
+        setRouteSearchTarget(null);
+      }
+      return;
+    }
+
+    if (routeSearchTarget === 'via') {
+      const destination = isRouteDestinationText(routeToQuery)
+        ? resolvePlaceFromText(routeToQuery, activeLocation)
+        : activeLocation;
+      if (!isRouteDestination(destination)) {
+        setRouteSearchTarget(null);
+        setMobileMode('route');
+        setMobileSheetOpen(true);
+        triggerToast("Choose Destination", "Choose a destination before adding a via route.", true);
+        return;
+      }
+
+      const start = routeStartKey === 'custom' && routeCustomStartPlace
+        ? routeCustomStartPlace
+        : lastUserLocation;
+      if (!start) {
+        setRouteSearchTarget(null);
+        setMobileMode('route');
+        setMobileSheetOpen(true);
+        triggerToast("Choose Start", "Set GPS or a start place before changing the route.", true);
+        return;
+      }
+
+      setRouteSearchTarget(null);
+      setActiveLocation(destination);
+      setRouteToQuery(destination.name);
+      const nextRoute = await drawRouteBetween(start.coords, destination.coords, destination.name, travelMode, start.name, place);
+      setMobileMode('route');
+      setMobileSheetOpen(true);
+      if (nextRoute) {
+        triggerToast("Route Changed", `Route to ${destination.name} now goes via ${place.name}.`, false);
+      }
       return;
     }
 
@@ -1644,8 +2021,13 @@ export default function App() {
     }
     const customStart = routeStartKey === 'custom'
       ? routeCustomStartPlace
-      : (normalizeSearchText(routeFromQuery) !== 'my gps location' ? resolvePlaceFromText(routeFromQuery, null) : null);
-    await refreshRouteFromEditor(customStart, place, !customStart);
+      : (!isGpsStartText(routeFromQuery) ? resolvePlaceFromText(routeFromQuery, null) : null);
+    const routeReady = await refreshRouteFromEditor(customStart, place, !customStart);
+    if (!routeReady) {
+      setMobileMode('route');
+      setMobileSheetOpen(true);
+      setRouteSearchTarget(null);
+    }
   };
 
   const openRouteSearch = (target) => {
@@ -1653,7 +2035,7 @@ export default function App() {
     setRouteSearchTarget(target);
     const currentDestinationName = isRouteDestination(activeLocation) ? activeLocation.name : '';
     const destinationQuery = isRouteDestinationText(routeToQuery) ? routeToQuery : currentDestinationName;
-    setSearchQuery(target === 'from' ? '' : destinationQuery);
+    setSearchQuery(target === 'from' || target === 'via' ? '' : destinationQuery);
     setMobileSheetOpen(false);
   };
 
@@ -1669,17 +2051,28 @@ export default function App() {
     setRouteSearchTarget(null);
     setRouteCustomStartPlace(null);
     setRouteStartKey('gps');
-    setRouteFromQuery('My GPS location');
+    setRouteFromQuery(lastUserLocation?.name || 'My GPS location');
     setActiveLocation(destination);
     setRouteToQuery(destination.name);
     setMobileMode('route');
     setMobileSheetOpen(true);
-    await refreshRouteFromEditor(null, destination, true);
+    if (lastUserLocation) {
+      await drawRouteBetween(lastUserLocation.coords, destination.coords, destination.name, travelMode, lastUserLocation.name);
+      return true;
+    }
+    const routeReady = await refreshRouteFromEditor(null, destination, true);
+    if (!routeReady) {
+      setRouteSearchTarget(null);
+      setMobileMode('route');
+      setMobileSheetOpen(true);
+    }
+    return routeReady;
   };
 
   const handleMobileStart = async () => {
     const existingRoute = lastRouteEndpointsRef.current;
-    if (existingRoute?.label && isRouteDestinationText(existingRoute.label)) {
+    const hasRenderableRoute = routeActive && routeMeta && routeLineCoordinatesRef.current.length > 1;
+    if (hasRenderableRoute && existingRoute?.label && isRouteDestinationText(existingRoute.label)) {
       const fallbackDistanceKm = getDistanceMeters(existingRoute.start, existingRoute.end) / 1000;
       const selectedMode = TRAVEL_MODES.find((mode) => mode.id === travelMode) || TRAVEL_MODES[0];
       const fallbackFuel = selectedMode.fuelKmPerLiter ? Math.max(0.1, fallbackDistanceKm / selectedMode.fuelKmPerLiter) : 0;
@@ -1706,7 +2099,7 @@ export default function App() {
         setActiveLocation({
           name: existingRoute.label,
           coords: existingRoute.end,
-          address: routeMeta.routeTo || existingRoute.label,
+          address: routeMeta?.routeTo || existingRoute.label,
           temp: "--",
           traffic: "Route active",
           type: "route"
@@ -1729,7 +2122,7 @@ export default function App() {
       return;
     }
     const startPlace = mobileMode === 'route'
-      ? (routeFromQuery.trim() && normalizeSearchText(routeFromQuery) !== 'my gps location' ? resolvePlaceFromText(routeFromQuery, null) : null)
+      ? (!isGpsStartText(routeFromQuery) ? resolvePlaceFromText(routeFromQuery, null) : null)
       : routeCustomStartPlace;
     setActiveLocation(destination);
     if (startPlace) {
@@ -1739,7 +2132,7 @@ export default function App() {
     } else if (mobileMode === 'route') {
       setRouteCustomStartPlace(null);
       setRouteStartKey('gps');
-      setRouteFromQuery('My GPS location');
+      setRouteFromQuery(lastUserLocation?.name || 'My GPS location');
     }
     setRouteToQuery(destination.name);
     setSearchQuery('');
@@ -1760,6 +2153,9 @@ export default function App() {
     if (routeReady) {
       setMobileMode('nav');
       setMobileSheetOpen(false);
+    } else {
+      setMobileMode('route');
+      setMobileSheetOpen(true);
     }
   };
 
@@ -1903,6 +2299,11 @@ export default function App() {
     playClickSound();
     const clickedPlace = getClickedPlace([event.lngLat.lat, event.lngLat.lng]);
 
+    if (mobileMode === 'nav') {
+      rerouteNavigationToPlace(clickedPlace);
+      return;
+    }
+
     setActiveLocation(clickedPlace);
     setMobileSheetOpen(true);
     setMobileMode('place');
@@ -1929,6 +2330,10 @@ export default function App() {
     const destination = createSearchDestination();
     if (routeSearchTarget) {
       handleRouteSearchSelect(destination);
+      return;
+    }
+    if (mobileMode === 'nav') {
+      rerouteNavigationToPlace(destination);
       return;
     }
     setSearchQuery(destination.name);
@@ -2166,10 +2571,14 @@ export default function App() {
       .addTo(leafletMapInstance.current);
     userLayerGroup.current.push(marker);
 
+    setLastUserLocation(location);
     if (options.select !== false) {
       setActiveLocation(location);
     }
     setRouteStartKey('gps');
+    if (routeStartKey === 'gps' || isGpsStartText(routeFromQuery)) {
+      setRouteFromQuery(location.name);
+    }
     leafletMapInstance.current?.flyTo({ center: toLngLat(coords), zoom: accuracy === 'approx' ? 12 : 15, duration: 1000 });
     return location;
   };
@@ -2500,12 +2909,12 @@ export default function App() {
             <Search size={22} className="shrink-0 text-slate-200" />
             <input
               type="text"
-              placeholder={routeSearchTarget === 'from' ? 'Search start location' : routeSearchTarget === 'to' ? 'Search destination' : 'Search here'}
+              placeholder={routeSearchTarget === 'from' ? 'Search start location' : routeSearchTarget === 'via' ? 'Search via place' : routeSearchTarget === 'to' ? 'Search destination' : 'Search here'}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="min-w-0 flex-1 bg-transparent text-base font-medium text-slate-100 placeholder:text-slate-300 focus:outline-none"
             />
-            <button type="button" onClick={routeSearchTarget === 'from' ? useGpsRouteStart : () => triggerToast("Choose Destination", "Search a place for destination. GPS is only for From.", true)} className="grid h-10 w-10 shrink-0 place-items-center rounded-full text-slate-100" title="Get your location">
+            <button type="button" onClick={routeSearchTarget === 'from' ? useGpsRouteStart : () => triggerToast("Choose Place", "Search and select a place from the list.", true)} className="grid h-10 w-10 shrink-0 place-items-center rounded-full text-slate-100" title="Get your location">
               <Crosshair size={20} />
             </button>
             <button type="submit" className="grid h-10 w-10 shrink-0 place-items-center rounded-full text-slate-100" title="Search">
@@ -2513,9 +2922,9 @@ export default function App() {
             </button>
           </form>
 
-          {searchQuery.trim() && searchSuggestions.length > 0 && (
+          {(routeSearchTarget ? routeSearchOptions.length > 0 : searchQuery.trim() && searchSuggestions.length > 0) && (
             <div className="pointer-events-auto max-h-[42vh] overflow-y-auto rounded-3xl bg-[#121212]/96 py-2 shadow-2xl">
-              {searchSuggestions.map((suggestion) => (
+              {(routeSearchTarget ? routeSearchOptions : searchSuggestions).map((suggestion) => (
                 <button
                   key={suggestion.key}
                   type="button"
@@ -2887,13 +3296,13 @@ export default function App() {
               <Search size={22} className="shrink-0 text-slate-200" />
               <input
                 type="text"
-                placeholder={routeSearchTarget === 'from' ? 'Search start location' : 'Search destination'}
+                placeholder={routeSearchTarget === 'from' ? 'Search start location' : routeSearchTarget === 'via' ? 'Search via place' : 'Search destination'}
                 value={searchQuery}
                 onChange={(event) => setSearchQuery(event.target.value)}
                 autoFocus
                 className="min-w-0 flex-1 bg-transparent text-base font-medium text-slate-100 placeholder:text-slate-300 focus:outline-none"
               />
-              <button type="button" onClick={routeSearchTarget === 'from' ? useGpsRouteStart : () => triggerToast("Choose Destination", "Search a place for destination. GPS is only for From.", true)} className="grid h-10 w-10 shrink-0 place-items-center rounded-full text-slate-100" title="Get your location">
+              <button type="button" onClick={routeSearchTarget === 'from' ? useGpsRouteStart : () => triggerToast("Choose Place", "Search and select a place from the list.", true)} className="grid h-10 w-10 shrink-0 place-items-center rounded-full text-slate-100" title="Get your location">
                 <Crosshair size={20} />
               </button>
               <button type="submit" className="grid h-10 w-10 shrink-0 place-items-center rounded-full text-slate-100" title="Search">
@@ -2902,8 +3311,8 @@ export default function App() {
             </form>
 
             <div className="mt-4 overflow-hidden rounded-3xl bg-[#121212]/96 shadow-2xl">
-              {searchQuery.trim() && searchSuggestions.length > 0 ? (
-                searchSuggestions.map((suggestion) => (
+              {routeSearchOptions.length > 0 ? (
+                routeSearchOptions.map((suggestion) => (
                   <button
                     key={suggestion.key}
                     type="button"
@@ -3053,6 +3462,27 @@ export default function App() {
                   </button>
                   <button type="button" onClick={() => openRouteSearch('to')} className="rounded-xl bg-cyan-400/15 px-3 py-2 text-xs font-bold text-cyan-200">Search</button>
                   </div>
+                  {routeAlternatives.length > 1 && (
+                    <div className="space-y-2 rounded-xl border border-white/10 bg-[#07090d] p-2">
+                      <div className="text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                        Choose route · {routeAlternatives.length} found
+                      </div>
+                      {routeAlternatives.map((route) => (
+                        <button
+                          key={route.id}
+                          type="button"
+                          onClick={() => handleSelectRouteAlternative(route)}
+                          className={`flex w-full items-center justify-between rounded-xl px-3 py-2 text-left text-sm font-bold ${selectedRouteId === route.id ? 'bg-cyan-400 text-[#062024]' : 'bg-white/8 text-slate-100'}`}
+                        >
+                          <span className="flex min-w-0 items-center gap-2 truncate">
+                            <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: route.color || '#4f46e5' }} />
+                            <span className="truncate">{selectedRouteId === route.id ? route.label : route.timeDeltaLabel}</span>
+                          </span>
+                          <span className="shrink-0 text-xs opacity-85">{route.durationMinutes} min · {route.distanceKm.toFixed(1)} km · {route.distanceDeltaLabel}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
 

@@ -476,6 +476,48 @@ body {
   border: 2px solid #fff;
 }
 
+.alternative-route-label {
+  position: relative;
+  min-width: 92px;
+  max-width: 132px;
+  border: 0;
+  border-radius: 8px;
+  background: rgb(255 255 255 / 0.96);
+  box-shadow: 0 6px 18px rgb(15 23 42 / 0.28);
+  color: #334155;
+  cursor: pointer;
+  display: grid;
+  gap: 1px;
+  font-family: inherit;
+  padding: 6px 8px;
+  text-align: left;
+}
+
+.alternative-route-label::before {
+  position: absolute;
+  left: 0;
+  top: 7px;
+  bottom: 7px;
+  width: 3px;
+  border-radius: 999px;
+  background: var(--route-color, #4f46e5);
+  content: "";
+}
+
+.alternative-route-label strong {
+  color: var(--route-color, #475569);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.05;
+}
+
+.alternative-route-label span {
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.05;
+}
+
 @keyframes gps-pulse {
   from {
     opacity: 0.9;
