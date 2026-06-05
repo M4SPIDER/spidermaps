@@ -740,6 +740,7 @@ export default function App() {
   const lastRouteEndpointsRef = useRef(null);
   const navTelemetryRef = useRef({ lastCoords: null, coveredMeters: 0, heading: 0 });
   const navRerouteRef = useRef({ lastRerouteAt: 0, offRouteHits: 0, currentStepIndex: 0 });
+  const routeInteractionLockedRef = useRef(false);
   const activeBaseStyleRef = useRef(mapStyle);
   const audioCtxRef = useRef(null);
   const hazardWatchIdRef = useRef(null);
@@ -750,6 +751,10 @@ export default function App() {
     setGlobalSuggestions([]);
     setGlobalSearchLoading(false);
   };
+
+  useEffect(() => {
+    routeInteractionLockedRef.current = mobileMode === 'nav' || routeActive;
+  }, [mobileMode, routeActive]);
 
   const renderUserLocationMarker = (coords, { label = 'Your Location', heading = 0, variant = '' } = {}) => {
     const map = leafletMapInstance.current;
@@ -1526,11 +1531,10 @@ export default function App() {
   }, [mobileMode, travelMode]);
 
   const handleSelectLocation = (location) => {
-    playClickSound();
-    if (mobileMode === 'nav') {
-      rerouteNavigationToPlace(location);
+    if (routeInteractionLockedRef.current) {
       return;
     }
+    playClickSound();
     clearSearchState();
     setActiveLocation(location);
     setMobileSheetOpen(true);
@@ -1774,6 +1778,7 @@ export default function App() {
         })).slice(0, 12),
         constructionHits
       });
+      routeInteractionLockedRef.current = true;
       setRouteActive(true);
       if (constructionHits.length) {
         triggerToast("Construction Zone", `Route passes near ${constructionHits[0].name}.`, true);
@@ -1813,6 +1818,7 @@ export default function App() {
         steps: [{ instruction: `Go straight towards ${label}`, distance: distanceKm * 1000, name: label }],
         constructionHits
       });
+      routeInteractionLockedRef.current = true;
       setRouteActive(true);
       triggerToast("Navigation Started", "Live routing was unavailable, so a direct estimate was used.", true);
       return { distanceKm, durationMinutes, fuelLiters, constructionHits };
@@ -1881,51 +1887,6 @@ export default function App() {
       ...current.filter((route) => route.id !== alternative.id)
     ]);
     triggerToast(alternative.label, `${alternative.durationMinutes} min, ${alternative.distanceKm.toFixed(1)} km selected.`, false);
-  };
-
-  const rerouteNavigationToPlace = async (place) => {
-    if (!isRouteDestination(place) || mobileMode !== 'nav') return false;
-
-    const previousMinutes = Number.parseFloat(routeMeta?.duration || '');
-    const currentDestination = lastRouteEndpointsRef.current?.end;
-    const currentDestinationLabel = lastRouteEndpointsRef.current?.label || routeMeta?.routeTo;
-    const liveStart = navTelemetryRef.current.lastCoords
-      || lastUserLocation?.coords
-      || lastRouteEndpointsRef.current?.start;
-
-    if (!liveStart || !currentDestination || !currentDestinationLabel) {
-      triggerToast("Route Start Missing", "Use GPS once or choose a start before changing the route.", true);
-      setMobileMode('route');
-      setMobileSheetOpen(true);
-      return false;
-    }
-
-    const startLabel = navTelemetryRef.current.lastCoords
-      ? 'Current location'
-      : (lastUserLocation?.name || lastRouteEndpointsRef.current?.startLabel || 'Selected start');
-
-    setRouteToQuery(currentDestinationLabel);
-    setSearchQuery('');
-    const nextRoute = await drawRouteBetween(liveStart, currentDestination, currentDestinationLabel, travelMode, startLabel, place);
-    setMobileMode('nav');
-    setMobileSheetOpen(false);
-    setMobileNavMenuOpen(false);
-    setMobileRecenterExpanded(false);
-
-    if (nextRoute && Number.isFinite(previousMinutes)) {
-      const diff = Math.round(nextRoute.durationMinutes - previousMinutes);
-      if (diff === 0) {
-        triggerToast("Route Changed", `Via ${place.name} is about the same ETA.`, false);
-      } else if (diff < 0) {
-        triggerToast("Faster Route", `Via ${place.name} is about ${Math.abs(diff)} min faster.`, false);
-      } else {
-        triggerToast("Slower Route", `Via ${place.name} is about ${diff} min slower.`, true);
-      }
-    } else {
-      triggerToast("Route Changed", `Navigation to ${currentDestinationLabel} now goes via ${place.name}.`, false);
-    }
-
-    return true;
   };
 
   const handleDrawRoute = async (destinationArg = activeLocation, startOverride) => {
@@ -2014,6 +1975,7 @@ export default function App() {
     playClickSound();
     routeLineCoordinatesRef.current = [];
     lastRouteEndpointsRef.current = null;
+    routeInteractionLockedRef.current = false;
     navRerouteRef.current = { lastRerouteAt: 0, offRouteHits: 0, currentStepIndex: 0 };
     clearRouteLine();
     clearMapLibreLayer('route-alternatives');
@@ -2230,6 +2192,7 @@ export default function App() {
 
       setRouteFromQuery(existingRoute.startLabel || routeMeta?.routeFrom || 'Selected start');
       setRouteToQuery(existingRoute.label);
+      routeInteractionLockedRef.current = true;
       setRouteActive(true);
       if (!routeMeta) {
         setRouteMeta({
@@ -2360,12 +2323,8 @@ export default function App() {
   const handleMobileSearchAlongRoute = (query = '') => {
     playClickSound();
     setMobileNavMenuOpen(false);
-    if (query) {
-      setSearchQuery(query);
-    }
-    setMobileMode('ask');
-    setMobileSheetOpen(true);
-    triggerToast("Search Route", query ? `Searching "${query}" along route.` : `Ask Maps is ready for ${activeLocation.name}.`, false);
+    clearSearchState();
+    triggerToast("Search Route", query ? `"${query}" noted for this route. Navigation stays locked.` : "Navigation controls stay locked to this route.", false);
   };
 
   const handleMobileAddReport = () => {
@@ -2506,13 +2465,9 @@ export default function App() {
 
   const handleMapClick = async (event) => {
     if (!event?.lngLat) return;
+    if (routeInteractionLockedRef.current) return;
     playClickSound();
     const clickedPlace = getRenderedClickedPlace(event) || await getClickedPlace([event.lngLat.lat, event.lngLat.lng]);
-
-    if (mobileMode === 'nav') {
-      rerouteNavigationToPlace(clickedPlace);
-      return;
-    }
 
     setActiveLocation(clickedPlace);
     setMobileSheetOpen(true);
@@ -2543,8 +2498,8 @@ export default function App() {
       handleRouteSearchSelect(destination);
       return;
     }
-    if (mobileMode === 'nav') {
-      rerouteNavigationToPlace(destination);
+    if (routeInteractionLockedRef.current) {
+      clearSearchState();
       return;
     }
     if (leafletMapInstance.current) {
