@@ -101,6 +101,19 @@ body {
   margin: 0;
 }
 
+.maplibregl-popup-content {
+  border-radius: 10px !important;
+  color: #0f172a !important;
+  font-family: inherit !important;
+  font-weight: 800;
+  letter-spacing: 0;
+  box-shadow: 0 12px 30px rgb(15 23 42 / 0.28) !important;
+}
+
+.maplibregl-popup-close-button {
+  color: #0f172a !important;
+}
+
 .spider-map-dark .maplibregl-canvas {
   filter: invert(1) hue-rotate(180deg) saturate(1.05) contrast(1.18) brightness(0.82);
 }
@@ -474,6 +487,160 @@ body {
   border-radius: inherit;
   background: #3b82f6;
   border: 2px solid #fff;
+}
+
+.spider-gps-marker {
+  display: grid;
+  width: 46px;
+  height: 46px;
+  place-items: center;
+  background: rgb(2 6 23 / 0.9);
+  border-color: rgb(59 130 246 / 0.86);
+  box-shadow: 0 0 0 2px rgb(255 255 255 / 0.35), 0 0 28px rgb(59 130 246 / 0.88);
+  color: #3b82f6;
+}
+
+.spider-gps-marker::after {
+  position: absolute;
+  left: 50%;
+  top: -8px;
+  width: 0;
+  height: 0;
+  border-right: 6px solid transparent;
+  border-bottom: 11px solid #3b82f6;
+  border-left: 6px solid transparent;
+  content: "";
+  transform: translateX(-50%) rotate(var(--gps-heading, 0deg));
+  transform-origin: 50% 28px;
+}
+
+.spider-gps-marker span {
+  display: none;
+}
+
+.spider-marker-svg {
+  position: relative;
+  z-index: 1;
+  width: 30px;
+  height: 30px;
+  color: currentColor;
+  filter: drop-shadow(0 0 5px currentColor);
+}
+
+.spider-gps-marker .spider-marker-svg {
+  transform: rotate(var(--gps-heading, 0deg));
+}
+
+.spider-gps-marker.selected-start {
+  background: rgb(2 6 23 / 0.92);
+  border-color: rgb(239 68 68 / 0.82);
+  box-shadow: 0 0 0 2px rgb(255 255 255 / 0.28), 0 0 24px rgb(239 68 68 / 0.72);
+  color: #ef4444;
+}
+
+.spider-gps-marker.selected-start::after {
+  border-bottom-color: #ef4444;
+}
+
+.nav-spider-icon {
+  position: relative;
+  display: inline-block;
+  width: 42px;
+  height: 42px;
+  border-radius: 999px;
+  background: #ffffff;
+  box-shadow: inset 0 0 0 3px rgb(255 255 255 / 0.4);
+}
+
+.nav-spider-icon::before,
+.nav-spider-icon::after {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 29px;
+  height: 3px;
+  border-radius: 999px;
+  background: #00746c;
+  content: "";
+  transform: translate(-50%, -50%) rotate(30deg);
+}
+
+.nav-spider-icon::after {
+  transform: translate(-50%, -50%) rotate(-30deg);
+}
+
+.route-endpoint-marker {
+  position: relative;
+  display: grid;
+  place-items: center;
+  color: #ffffff;
+  font-family: inherit;
+}
+
+.route-start-marker {
+  width: 44px;
+  height: 44px;
+  border-radius: 999px;
+  background: #111827;
+  border: 2px solid #ef4444;
+  box-shadow: 0 0 0 3px rgb(255 255 255 / 0.26), 0 0 26px rgb(239 68 68 / 0.78);
+}
+
+.route-start-marker .spider-marker-svg {
+  width: 31px;
+  height: 31px;
+  color: #ef4444;
+}
+
+.route-start-marker span {
+  display: none;
+}
+
+.route-destination-marker {
+  min-width: 48px;
+  transform: translateY(-2px);
+}
+
+.route-destination-marker span {
+  position: relative;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px 999px 999px 0;
+  background: #ef4444;
+  border: 3px solid #ffffff;
+  box-shadow: 0 10px 22px rgb(0 0 0 / 0.36), 0 0 22px rgb(239 68 68 / 0.72);
+  transform: rotate(-45deg);
+}
+
+.route-destination-marker span::after {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: #ffffff;
+  content: "";
+  transform: translate(-50%, -50%);
+}
+
+.route-destination-marker strong {
+  position: absolute;
+  left: 50%;
+  bottom: 34px;
+  max-width: 132px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #ffffff;
+  box-shadow: 0 8px 18px rgb(15 23 42 / 0.28);
+  color: #ef4444;
+  font-size: 11px;
+  font-weight: 900;
+  line-height: 1;
+  padding: 6px 9px;
+  text-overflow: ellipsis;
+  transform: translateX(-50%);
+  white-space: nowrap;
 }
 
 .alternative-route-label {
