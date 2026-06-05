@@ -182,6 +182,90 @@ const EXACT_LOCAL_SEARCH_KEYS = [];
 
 const VERIFIED_SEARCH_FALLBACKS = [
   {
+    key: 'verified-gandhis-villa-malkajgiri',
+    match: /\b(gandhi'?s?|gandhis)\s+villa\b|\b(gandhi'?s?|gandhis)\b.*\b(malkajgiri|narasimha|maruthi)\b|\b(narasimha|maruthi|malkajgiri)\b.*\b(gandhi'?s?|gandhis)\b/i,
+    place: {
+      name: "Gandhi's Villa",
+      coords: [17.4419366, 78.5373665],
+      address: '3-89/1, Narasimha Reddy Nagar, Maruthi Nagar, Malkajgiri, Secunderabad, Telangana 500047',
+      temp: '--',
+      traffic: 'Verified local home result',
+      type: 'residence'
+    }
+  },
+  {
+    key: 'verified-suprabhata-arcade-1',
+    match: /\b(suprabhata|suprabatha)\s+arcade\s*-?\s*1\b|\b(gfwj\+wr4)\b|\b(gfwj\s*wr4)\b|\bsuprabhata\b.*\bkompally\b|\bsuprabatha\b.*\bkompally\b/i,
+    place: {
+      name: 'SUPRABHATA ARCADE-1',
+      coords: [17.5472625, 78.4820781],
+      address: 'GFWJ+WR4 2, Kompally, Hyderabad, Telangana 500100',
+      temp: '--',
+      traffic: 'Verified local apartment result',
+      type: 'apartment'
+    }
+  },
+  {
+    key: 'verified-suprabhata-arcade-2',
+    match: /\b(suprabhata|suprabatha)\s+arcade\s*-?\s*(2|ii)\b|\b(gfwj\+xv)\b|\b(gfwj\s*xv)\b/i,
+    place: {
+      name: 'Suprabatha Arcade-II',
+      coords: [17.5474375, 78.4821875],
+      address: 'GFWJ+XV, 2, Kompally, Hyderabad, Telangana 500100',
+      temp: '--',
+      traffic: 'Verified local apartment result',
+      type: 'apartment'
+    }
+  },
+  {
+    key: 'verified-my-friends-circle-restaurant',
+    match: /\b(my\s+)?friend'?s?\s+circle\b|\bfriends?\s+circle\s+restaurant\b|\bffxg\+pv\b|\bffxg\s*pv\b|\blaxmi\s+plaza\b.*\bsuchitra\b/i,
+    place: {
+      name: "My Friend's Circle Restaurant",
+      coords: [17.4993125, 78.4771875],
+      address: 'Plot No. 8, Suchitra Rd, near Laxmi Plaza, Ramraj Nagar, Medchal, Secunderabad, Telangana 500015',
+      temp: '--',
+      traffic: 'Verified local restaurant result',
+      type: 'restaurant'
+    }
+  },
+  {
+    key: 'verified-indumani-plaza-apartment',
+    match: /\bindumani\s+plaza\b|\bffw7\+j8\b|\bffw7\s*j8\b|\bpadma\s+nagar\b.*\bphase\s*ii\b/i,
+    place: {
+      name: 'Indumani Plaza Apartment',
+      coords: [17.4965625, 78.4633125],
+      address: '16, Padma Nagar Phase II Ln, Phase 2, Bajpayee Nagar, Quthbullapur, Hyderabad, Telangana 500054',
+      temp: '--',
+      traffic: 'Verified local apartment result',
+      type: 'apartment'
+    }
+  },
+  {
+    key: 'verified-delite-kitchen-kompally',
+    match: /\b(delite|delight|delete)\s+kitchen\b.*\b(kompally|devender|central park|doolapally)\b|\b(kompally|devender|central park|doolapally)\b.*\b(delite|delight|delete)\s+kitchen\b/i,
+    place: {
+      name: 'Delite Kitchen, Kompally',
+      coords: [17.541892, 78.4908809],
+      address: 'Survey No 160, Plot No 4-128, beside New Gulf Bakers, Central Park, Devender Colony, Kompally, Hyderabad, Telangana 500100',
+      temp: '--',
+      traffic: 'Verified local restaurant result',
+      type: 'restaurant'
+    }
+  },
+  {
+    key: 'verified-delite-kitchen-medchal',
+    match: /\b(delite|delight|delete)\s+kitchen\b.*\b(medchal|slr|vivekananda|raghavendra|nh44|gfrr)\b|\b(medchal|slr|vivekananda|raghavendra|nh44|gfrr)\b.*\b(delite|delight|delete)\s+kitchen\b/i,
+    place: {
+      name: 'Delite Kitchen - Medchal',
+      coords: [17.5418125, 78.4908125],
+      address: 'GFRR+P8, Sy#122&123, SLR Centre, NH44, opposite Vivekananda statue, Raghavendra Colony, Medchal, Hyderabad, Secunderabad, Telangana 501401',
+      temp: '--',
+      traffic: 'Verified local restaurant result',
+      type: 'restaurant'
+    }
+  },
+  {
     key: 'verified-dmart-kompally',
     match: /\b(dmart|d\s*mart|d-mart)\b.*\b(kompally|medchal)\b|\b(kompally|medchal)\b.*\b(dmart|d\s*mart|d-mart)\b/i,
     place: {
@@ -435,6 +519,97 @@ const CATEGORY_SEARCH_QUERIES = {
   transit: 'transit bus metro stations near me'
 };
 
+const NEARBY_CATEGORY_FALLBACKS = [
+  {
+    category: 'fuel',
+    name: 'Indian Oil Petrol Pump',
+    coords: [17.5409, 78.4908],
+    address: 'Jayabheri Park Road / IOCL Kompally, Kompally, Hyderabad',
+    type: 'fuel'
+  },
+  {
+    category: 'fuel',
+    name: 'Indian Oil Petrol Pump - Smart Bazaar Road',
+    coords: [17.5435, 78.4902],
+    address: 'Behind Smart Bazaar, Jayabheri Park Road, Kompally, Hyderabad',
+    type: 'fuel'
+  },
+  {
+    category: 'hospitals',
+    name: 'KIMS Hospitals, Kompally',
+    coords: [17.5354, 78.4858],
+    address: 'Kompally, North Hyderabad, Telangana',
+    type: 'hospital'
+  },
+  {
+    category: 'hospitals',
+    name: 'Renova Hospital, Kompally',
+    coords: [17.5378, 78.4866],
+    address: 'Kompally, Hyderabad, Telangana 500055',
+    type: 'hospital'
+  },
+  {
+    category: 'hospitals',
+    name: 'Russh Super Speciality Hospital',
+    coords: [17.5089, 78.4808],
+    address: 'Suchitra Kompally, Hyderabad',
+    type: 'hospital'
+  },
+  {
+    category: 'restaurants',
+    name: 'Delite Kitchen, Kompally',
+    coords: [17.541892, 78.4908809],
+    address: 'Central Park, Devender Colony, Kompally, Hyderabad',
+    type: 'restaurant'
+  },
+  {
+    category: 'restaurants',
+    name: 'AnTeRa Kitchen And Bar',
+    coords: [17.5289, 78.4898],
+    address: 'Near PSR Convention Center, Brundavan Colony, Kompally, Hyderabad',
+    type: 'restaurant'
+  },
+  {
+    category: 'restaurants',
+    name: 'Wow! Momo - IOCL Kompally',
+    coords: [17.5409, 78.4908],
+    address: 'IOCL Kompally, Kompally, Hyderabad',
+    type: 'restaurant'
+  },
+  {
+    category: 'restaurants',
+    name: 'Zinggy Sea Food Restaurant',
+    coords: [17.5382, 78.4862],
+    address: 'Masjid Street, Opposite Citrus Hills, Kompally, Hyderabad',
+    type: 'restaurant'
+  },
+  {
+    category: 'transit',
+    name: 'Kompally Bus Stop',
+    coords: [17.5401, 78.4909],
+    address: 'Nizamabad Road, Kompally, Hyderabad',
+    type: 'bus_stop'
+  },
+  {
+    category: 'transit',
+    name: 'Gundlapochampally Railway Station',
+    coords: [17.5876, 78.4779],
+    address: 'Gundlapochampally, Medchal-Malkajgiri, Telangana',
+    type: 'station'
+  }
+];
+
+const getFallbackCategoriesForQuery = (query) => {
+  const text = normalizeSearchText(query);
+  const categories = [];
+  if (/\b(petrol|pump|pumps|fuel|gas|hp|hpcl)\b/.test(text)) categories.push('fuel');
+  if (/\b(hospital|hospitals|clinic|clinics|medical)\b/.test(text)) categories.push('hospitals');
+  if (/\b(restaurant|restaurants|food|cafe|dining)\b/.test(text)) categories.push('restaurants');
+  if (/\b(hostel|hostels|hotel|hotels|lodge|stay)\b/.test(text)) categories.push('hostels');
+  if (/\b(transit|bus|metro|station|railway)\b/.test(text)) categories.push('transit');
+  return [...new Set(categories)];
+};
+
 const getPrimarySearchWords = (query) => {
   const words = (cleanIntentWords(query) || normalizeSearchText(query))
     .split(/\s+/)
@@ -450,7 +625,7 @@ const getExpandedSearchRegexWords = (query) => {
 };
 
 const isHyderabadPoiQuery = (query) => (
-  /\b(dmart|d\s*mart|supermarket|shop|store|mart|restaurant|restaurants|food|cafe|hotel|hotels|hostel|hostels|lodge|bus|bus stop|metro|station|transit|petrol|pump|fuel|hp|hpcl|gas|lpg|hospital|hospitals|clinic|temple|mandir|masjid|church|school|college|colleges|clg|clgs|cgl|cgls|ground|hmt|chintal|chinthal|hyderabad|secunderabad|telangana|medchal|kompally|kukatpally|kphb|idpl|balanagar|dulapally|maisammaguda|quthbullapur|jeedimetla)\b/i.test(query)
+  /\b(arcade|apartment|apartments|villa|residence|residency|plaza|dmart|d\s*mart|supermarket|shop|store|mart|restaurant|restaurants|food|cafe|hotel|hotels|hostel|hostels|lodge|bus|bus stop|metro|station|transit|petrol|pump|fuel|hp|hpcl|gas|lpg|hospital|hospitals|clinic|temple|mandir|masjid|church|school|college|colleges|clg|clgs|cgl|cgls|ground|hmt|chintal|chinthal|hyderabad|secunderabad|telangana|medchal|kompally|kukatpally|kphb|idpl|balanagar|dulapally|maisammaguda|quthbullapur|jeedimetla|malkajgiri|suchitra)\b/i.test(query)
 );
 
 const escapeOverpassRegex = (value) => (
@@ -462,12 +637,12 @@ const buildOverpassPoiQuery = (query, centerOverride = null) => {
   const words = getExpandedSearchRegexWords(query);
   const nameRegex = words.length ? words.join('|') : '.*';
   const radius = centerOverride
-    ? (/\b(transit|bus|metro|station)\b/i.test(query) ? 8500 : 6500)
+    ? (/\b(transit|bus|metro|station)\b/i.test(query) ? 14000 : 12000)
     : (/\b(dmart|d\s*mart|supermarket|shop|store|mart)\b/i.test(query)
     ? 24000
     : (/\b(hyderabad|secunderabad|telangana)\b/i.test(query) ? 22000 : 12000));
 
-  return `[out:json][timeout:8];
+  return `[out:json][timeout:12];
 (
   nwr(around:${radius},${lat},${lng})["name"~"${nameRegex}",i];
   nwr(around:${radius},${lat},${lng})["brand"~"${nameRegex}",i];
@@ -925,10 +1100,12 @@ export default function App() {
   const audioCtxRef = useRef(null);
   const hazardWatchIdRef = useRef(null);
   const warnedHazardsRef = useRef(new Set());
+  const mapReadSuggestionsRef = useRef([]);
 
   const clearSearchState = () => {
     setSearchQuery('');
     setSearchCenterOverride(null);
+    mapReadSuggestionsRef.current = [];
     setGlobalSuggestions([]);
     setGlobalSearchLoading(false);
   };
@@ -1104,7 +1281,7 @@ export default function App() {
           : [];
 
         const maxNearbyDistance = searchCenter
-          ? (/\b(transit|bus|metro|station)\b/i.test(searchQuery) ? 12000 : 9000)
+          ? (/\b(transit|bus|metro|station)\b/i.test(searchQuery) ? 16000 : 14000)
           : null;
         const isNearbyResult = (place) => (
           !searchCenter
@@ -1191,6 +1368,28 @@ export default function App() {
           .filter((suggestion) => suggestion && isNearbyResult(suggestion.place))
           .filter(Boolean);
 
+        const mapSuggestions = searchCenter ? mapReadSuggestionsRef.current : [];
+        const providerSuggestions = [...overpassSuggestions, ...photonSuggestions, ...nominatimSuggestions];
+        const fallbackCategories = searchCenter && !mapSuggestions.length && !providerSuggestions.length ? getFallbackCategoriesForQuery(searchQuery) : [];
+        const fallbackSuggestions = fallbackCategories.length
+          ? NEARBY_CATEGORY_FALLBACKS
+              .filter((item) => fallbackCategories.includes(item.category))
+              .map((item, index) => ({
+                key: `nearby-fallback-${item.category}-${normalizeSearchText(item.name).replace(/\s+/g, '-')}`,
+                source: 'nearby',
+                score: 60 - index,
+                place: {
+                  name: item.name,
+                  coords: item.coords,
+                  address: item.address,
+                  temp: '--',
+                  traffic: 'Nearby fallback result while live OSM POI search is slow',
+                  type: item.type
+                }
+              }))
+              .filter((suggestion) => isNearbyResult(suggestion.place))
+          : [];
+
         const seen = new Set();
         const primarySearchWords = getPrimarySearchWords(searchQuery);
         const searchRankCenter = searchCenter || (localQueryHint ? getSearchCenterForQuery(searchQuery) : null);
@@ -1203,10 +1402,11 @@ export default function App() {
           }).length;
           const distanceMeters = searchRankCenter ? getDistanceMeters(searchRankCenter, suggestion.place.coords) : null;
           const nearbyScore = Number.isFinite(distanceMeters) ? Math.max(0, 28 - (distanceMeters / 1000) * 3) : 0;
-          return (primaryHits * 100) + nearbyScore + (suggestion.source === 'overpass' ? 12 : 0) + (suggestion.score || 0);
+          const sourceBonus = suggestion.source === 'map' ? 80 : suggestion.source === 'overpass' ? 12 : 0;
+          return sourceBonus + (primaryHits * 100) + nearbyScore + (suggestion.score || 0);
         };
         setGlobalSuggestions(
-          [...overpassSuggestions, ...photonSuggestions, ...nominatimSuggestions]
+          [...mapSuggestions, ...providerSuggestions, ...fallbackSuggestions]
             .filter((suggestion) => {
               const key = `${normalizeSearchText(suggestion.place.name)}-${suggestion.place.coords.map((value) => value.toFixed(3)).join(',')}`;
               if (seen.has(key)) return false;
@@ -1231,6 +1431,34 @@ export default function App() {
       clearTimeout(timer);
     };
   }, [lastUserLocation?.coords, searchCenterOverride, searchQuery]);
+
+  useEffect(() => {
+    const cleanedQuery = cleanIntentWords(searchQuery) || normalizeSearchText(searchQuery);
+    if (searchCenterOverride || cleanedQuery.length < 3 || routeSearchTarget) return undefined;
+
+    let cancelled = false;
+    const timer = window.setTimeout(async () => {
+      const mapSuggestions = await readSearchTextFromMap(searchQuery);
+      if (cancelled || mapReadSuggestionsRef.current.length) return;
+      mapReadSuggestionsRef.current = mapSuggestions;
+      if (mapSuggestions.length) {
+        setGlobalSuggestions((current) => {
+          const seen = new Set();
+          return [...mapSuggestions, ...current].filter((suggestion) => {
+            const key = `${normalizeSearchText(suggestion.place.name)}-${suggestion.place.coords.map((value) => value.toFixed(3)).join(',')}`;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          });
+        });
+      }
+    }, 280);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [routeSearchTarget, searchCenterOverride, searchQuery]);
 
   useEffect(() => {
     let cancelled = false;
@@ -2988,6 +3216,186 @@ export default function App() {
     }, 3500);
   };
 
+  const waitForMapIdle = () => new Promise((resolve) => {
+    const map = leafletMapInstance.current;
+    if (!map) {
+      resolve();
+      return;
+    }
+    const timer = window.setTimeout(resolve, 900);
+    map.once('idle', () => {
+      window.clearTimeout(timer);
+      resolve();
+    });
+  });
+
+  const getFeatureCenter = (feature) => {
+    const geometry = feature?.geometry;
+    if (!geometry?.coordinates) return null;
+    const points = [];
+    const collect = (coords) => {
+      if (!Array.isArray(coords)) return;
+      if (coords.length >= 2 && typeof coords[0] === 'number' && typeof coords[1] === 'number') {
+        points.push(coords);
+        return;
+      }
+      coords.forEach(collect);
+    };
+    collect(geometry.coordinates);
+    const geoPoints = points.filter(([lng, lat]) => Number.isFinite(lat) && Number.isFinite(lng) && Math.abs(lat) <= 90 && Math.abs(lng) <= 180);
+    if (!geoPoints.length) return null;
+    const [lngTotal, latTotal] = geoPoints.reduce(([lngSum, latSum], [lng, lat]) => [lngSum + lng, latSum + lat], [0, 0]);
+    return [latTotal / geoPoints.length, lngTotal / geoPoints.length];
+  };
+
+  const getMapFeatureLabel = (props = {}) => (
+    props.name_en || props['name:en'] || props.name || props.brand || props.operator || props.ref || props['addr:housename'] || ''
+  );
+
+  const getMapFeatureTypeText = (props = {}) => normalizeSearchText([
+    props.class,
+    props.subclass,
+    props.type,
+    props.kind,
+    props.amenity,
+    props.shop,
+    props.tourism,
+    props.highway,
+    props.railway,
+    props.public_transport,
+    props.brand,
+    props.operator,
+    props.name
+  ].filter(Boolean).join(' '));
+
+  const doesMapFeatureMatchCategory = (category, props = {}) => {
+    const text = getMapFeatureTypeText(props);
+    if (category === 'fuel') return /\b(fuel|petrol|gas station|gas|hp|hpcl|iocl|indian oil|bharat petroleum|bpcl|reliance petroleum)\b/.test(text);
+    if (category === 'restaurants') return /\b(restaurant|restaurants|cafe|fast food|fast_food|food|bar|pub|dining)\b/.test(text);
+    if (category === 'hospitals') return /\b(hospital|hospitals|clinic|clinics|doctors|healthcare|medical|health post|health_post)\b/.test(text);
+    if (category === 'hostels') return /\b(hostel|hostels|hotel|hotels|guest house|guest_house|motel|lodge|stay)\b/.test(text);
+    if (category === 'transit') return /\b(bus stop|bus_stop|bus station|bus_station|station|railway|subway|metro|platform|stop_position|halt)\b/.test(text);
+    return text.includes(normalizeSearchText(category));
+  };
+
+  const readNearbyCategoryFromMap = async (category, center) => {
+    const map = leafletMapInstance.current;
+    if (!map || !center) return [];
+
+    map.flyTo({ center: toLngLat(center), zoom: Math.max(map.getZoom(), 15), duration: 300 });
+    await waitForMapIdle();
+
+    const point = map.project(toLngLat(center));
+    const box = [[point.x - 520, point.y - 520], [point.x + 520, point.y + 520]];
+    const styleLayerIds = map.getStyle()?.layers?.map((layer) => layer.id) || [];
+    const renderedFeatures = map.queryRenderedFeatures(box, { layers: styleLayerIds });
+    const sourceFeatures = ['poi', 'transportation_name', 'transportation', 'place']
+      .flatMap((sourceLayer) => {
+        try {
+          return map.querySourceFeatures('openmaptiles', { sourceLayer });
+        } catch {
+          return [];
+        }
+      });
+
+    const maxDistance = category === 'transit' ? 16000 : 14000;
+    const seen = new Set();
+    return [...renderedFeatures, ...sourceFeatures]
+      .map((feature) => {
+        const props = feature.properties || {};
+        const name = getMapFeatureLabel(props);
+        const coords = getFeatureCenter(feature);
+        if (!name || !coords || !doesMapFeatureMatchCategory(category, props)) return null;
+        const distanceMeters = getDistanceMeters(center, coords);
+        if (distanceMeters > maxDistance) return null;
+        const type = props.amenity || props.shop || props.tourism || props.highway || props.railway || props.public_transport || props.class || props.subclass || category;
+        return {
+          key: `map-${category}-${normalizeSearchText(name).replace(/\s+/g, '-')}-${coords.map((value) => value.toFixed(4)).join('-')}`,
+          source: 'map',
+          score: 160 - (distanceMeters / 100),
+          place: {
+            name,
+            coords,
+            address: `${Math.max(0.1, distanceMeters / 1000).toFixed(1)} km from your location`,
+            temp: '--',
+            traffic: 'Read from loaded map data',
+            type
+          }
+        };
+      })
+      .filter(Boolean)
+      .filter((suggestion) => {
+        const key = `${normalizeSearchText(suggestion.place.name)}-${suggestion.place.coords.map((value) => value.toFixed(3)).join(',')}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 8);
+  };
+
+  const readSearchTextFromMap = async (query, center = lastUserLocation?.coords || activeLocation.coords) => {
+    const map = leafletMapInstance.current;
+    if (!map || !query.trim()) return [];
+
+    const searchCenter = center || [map.getCenter().lat, map.getCenter().lng];
+    const cleanQuery = cleanIntentWords(query) || normalizeSearchText(query);
+    if (cleanQuery.length < 3) return [];
+
+    map.flyTo({ center: toLngLat(searchCenter), zoom: Math.max(map.getZoom(), 15), duration: 250 });
+    await waitForMapIdle();
+
+    const point = map.project(toLngLat(searchCenter));
+    const box = [[point.x - 720, point.y - 720], [point.x + 720, point.y + 720]];
+    const styleLayerIds = map.getStyle()?.layers?.map((layer) => layer.id) || [];
+    const renderedFeatures = map.queryRenderedFeatures(box, { layers: styleLayerIds });
+    const sourceFeatures = ['poi', 'transportation_name', 'transportation', 'place', 'building']
+      .flatMap((sourceLayer) => {
+        try {
+          return map.querySourceFeatures('openmaptiles', { sourceLayer });
+        } catch {
+          return [];
+        }
+      });
+
+    const seen = new Set();
+    return [...renderedFeatures, ...sourceFeatures]
+      .map((feature) => {
+        const props = feature.properties || {};
+        const name = getMapFeatureLabel(props);
+        const coords = getFeatureCenter(feature);
+        if (!name || !coords) return null;
+        const type = props.amenity || props.shop || props.tourism || props.highway || props.railway || props.public_transport || props.class || props.subclass || 'map place';
+        const text = `${name} ${type} ${props.brand || ''} ${props.operator || ''}`;
+        const score = getSearchScore(cleanQuery, text);
+        if (score < 34 && !fuzzySearch(cleanQuery, text)) return null;
+        const distanceMeters = getDistanceMeters(searchCenter, coords);
+        if (distanceMeters > 18000) return null;
+        return {
+          key: `map-search-${normalizeSearchText(name).replace(/\s+/g, '-')}-${coords.map((value) => value.toFixed(4)).join('-')}`,
+          source: 'map',
+          score: score + Math.max(0, 36 - distanceMeters / 500),
+          place: {
+            name,
+            coords,
+            address: `${Math.max(0.1, distanceMeters / 1000).toFixed(1)} km from map center`,
+            temp: '--',
+            traffic: 'Read from loaded map data',
+            type
+          }
+        };
+      })
+      .filter(Boolean)
+      .filter((suggestion) => {
+        const key = `${normalizeSearchText(suggestion.place.name)}-${suggestion.place.coords.map((value) => value.toFixed(3)).join(',')}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 8);
+  };
+
   const handleCategoryClick = async (category) => {
     playClickSound();
     const query = CATEGORY_SEARCH_QUERIES[category] || `${category} Hyderabad`;
@@ -3013,10 +3421,12 @@ export default function App() {
     setRouteSearchTarget(null);
     setMobileMode('place');
     setMobileSheetOpen(true);
-    setGlobalSuggestions([]);
     setSearchCenterOverride(origin.coords);
+    const mapSuggestions = await readNearbyCategoryFromMap(category, origin.coords);
+    mapReadSuggestionsRef.current = mapSuggestions;
+    setGlobalSuggestions(mapSuggestions);
     setSearchQuery(query);
-    triggerToast("Searching Nearby", `Finding ${category} near your location.`, false);
+    triggerToast("Reading Map", mapSuggestions.length ? `Found ${mapSuggestions.length} ${category} places from loaded map data.` : `Reading map first, then checking live POI data for ${category}.`, false);
   };
 
   const handleSaveLocation = async () => {
@@ -3338,6 +3748,7 @@ export default function App() {
                 value={searchQuery}
                 onChange={(e) => {
                   setSearchCenterOverride(null);
+                  mapReadSuggestionsRef.current = [];
                   setSearchQuery(e.target.value);
                 }}
                 className="bg-transparent text-slate-100 placeholder-slate-400 font-sans text-sm focus:outline-none w-full"
@@ -3516,6 +3927,7 @@ export default function App() {
               value={searchQuery}
               onChange={(e) => {
                 setSearchCenterOverride(null);
+                mapReadSuggestionsRef.current = [];
                 setSearchQuery(e.target.value);
               }}
               className="min-w-0 flex-1 bg-transparent text-base font-medium text-slate-100 placeholder:text-slate-300 focus:outline-none"
@@ -3554,6 +3966,12 @@ export default function App() {
                   </div>
                 </button>
               ))}
+            </div>
+          )}
+
+          {!routeSearchTarget && searchQuery.trim().length >= 3 && searchSuggestions.length === 0 && (
+            <div className="pointer-events-auto rounded-3xl bg-[#121212]/96 px-4 py-3 text-sm text-slate-300 shadow-2xl">
+              {globalSearchLoading ? 'Reading map and searching nearby data...' : 'No result in loaded map data yet. Press arrow to search this text.'}
             </div>
           )}
 
