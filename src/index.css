@@ -25,6 +25,127 @@ body {
   font-family: Roboto, "Noto Sans Devanagari UI", "Noto Sans Bengali UI", "Noto Sans Telugu UI", "Noto Sans Tamil UI", "Noto Sans Gujarati UI", "Noto Sans Kannada UI", "Noto Sans Malayalam UI", "Noto Sans Gurmukhi UI", Arial, sans-serif;
 }
 
+html.tts-lab-page,
+body.tts-lab-page {
+  height: auto;
+  min-height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: auto;
+  touch-action: pan-y;
+}
+
+body.tts-lab-page #root {
+  min-height: 100%;
+  overflow: visible;
+}
+
+.pip-navigation-card {
+  display: none;
+}
+
+body.spider-pip-mode .fixed,
+body.spider-pip-mode .mobile-bottom-sheet,
+body.spider-pip-mode .map-action-button,
+body.spider-pip-mode .mobile-circle-button {
+  display: none !important;
+}
+
+body.spider-pip-mode,
+body.spider-pip-mode #root,
+body.spider-pip-mode .spider-map-frame,
+body.spider-pip-mode .spider-map-surface,
+body.spider-pip-mode .maplibregl-map,
+body.spider-pip-mode .maplibregl-canvas-container,
+body.spider-pip-mode .maplibregl-canvas {
+  background: #020617 !important;
+}
+
+body.spider-pip-mode .spider-map-frame {
+  position: fixed !important;
+  inset: 0 !important;
+  z-index: 80 !important;
+  width: var(--spider-pip-map-width, 360px) !important;
+  height: var(--spider-pip-map-height, 480px) !important;
+  overflow: hidden !important;
+}
+
+body.spider-pip-mode .spider-map-surface {
+  opacity: 1 !important;
+}
+
+body.spider-pip-mode .pip-navigation-card {
+  position: fixed;
+  inset-inline: 0;
+  bottom: 0;
+  z-index: 90;
+  display: block;
+  overflow: hidden;
+  background: transparent;
+  color: #ffffff;
+  box-shadow: none;
+}
+
+body.spider-pip-mode .pip-instruction-panel {
+  display: flex;
+  align-items: center;
+  gap: clamp(9px, 4vw, 18px);
+  min-height: clamp(70px, 25vh, 110px);
+  padding: clamp(10px, 4vw, 18px);
+  background: #00796b;
+  box-shadow: 0 -10px 28px rgb(0 0 0 / 0.28);
+}
+
+body.spider-pip-mode .pip-turn-icon {
+  display: grid;
+  width: clamp(38px, 15vw, 64px);
+  height: clamp(38px, 15vw, 64px);
+  flex-shrink: 0;
+  place-items: center;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 0.16);
+  color: #ffffff;
+  font-size: clamp(26px, 10vw, 46px);
+  font-weight: 900;
+  line-height: 1;
+}
+
+body.spider-pip-mode .pip-road-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: clamp(18px, 6.5vw, 32px);
+  font-weight: 800;
+  line-height: 1.05;
+}
+
+body.spider-pip-mode .pip-route-time {
+  margin-top: clamp(4px, 1.8vw, 10px);
+  overflow: hidden;
+  color: rgb(255 255 255 / 0.82);
+  font-size: clamp(12px, 4vw, 20px);
+  font-weight: 500;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+body.spider-pip-mode .spider-map-frame,
+body.spider-pip-mode .spider-map-surface,
+body.spider-pip-mode .maplibregl-map {
+  height: var(--spider-pip-map-height, 480px) !important;
+  width: var(--spider-pip-map-width, 360px) !important;
+}
+
+body.spider-pip-mode .maplibregl-canvas {
+  height: var(--spider-pip-map-height, 480px) !important;
+  width: var(--spider-pip-map-width, 360px) !important;
+}
+
+.tts-lab-shell {
+  min-height: 100svh;
+}
+
 .scrollbar-none {
   scrollbar-width: none;
 }
@@ -555,8 +676,59 @@ body {
   color: #ef4444;
 }
 
+.spider-gps-marker.nav-live {
+  background: rgb(2 6 23 / 0.94);
+  border-color: rgb(239 68 68 / 0.88);
+  box-shadow: 0 0 0 2px rgb(255 255 255 / 0.3), 0 0 30px rgb(239 68 68 / 0.82);
+  color: #ef4444;
+}
+
 .spider-gps-marker.selected-start::after {
   border-bottom-color: #ef4444;
+}
+
+.spider-gps-marker.nav-live::after {
+  border-bottom-color: #ef4444;
+}
+
+.vehicle-gps-marker {
+  display: grid;
+  width: 54px;
+  height: 54px;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.vehicle-gps-marker::before {
+  inset: 8px;
+  background: radial-gradient(circle, rgb(56 189 248 / 0.24), rgb(56 189 248 / 0));
+  animation: gps-pulse 1.7s ease-out infinite;
+}
+
+.vehicle-gps-marker::after {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 16px;
+  height: 16px;
+  border-radius: 999px;
+  background: rgb(226 232 240 / 0.88);
+  border: 2px solid rgb(255 255 255 / 0.82);
+  box-shadow: 0 0 12px rgb(56 189 248 / 0.65);
+  content: "";
+  transform: translate(-50%, -50%);
+}
+
+.vehicle-marker-svg {
+  position: relative;
+  z-index: 1;
+  width: 48px;
+  height: 48px;
+  filter: drop-shadow(0 8px 8px rgb(0 0 0 / 0.35)) drop-shadow(0 0 16px rgb(56 189 248 / 0.7));
+  transform: rotate(var(--gps-heading, 0deg));
+  transform-origin: 50% 50%;
 }
 
 .nav-spider-icon {
@@ -584,6 +756,55 @@ body {
 
 .nav-spider-icon::after {
   transform: translate(-50%, -50%) rotate(-30deg);
+}
+
+.nav-maneuver-icon,
+.direction-maneuver-icon {
+  display: grid;
+  place-items: center;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #00746c;
+  font-weight: 900;
+  line-height: 1;
+  box-shadow: 0 8px 22px rgb(0 0 0 / 0.18), inset 0 0 0 2px rgb(255 255 255 / 0.45);
+}
+
+.nav-maneuver-icon {
+  width: 56px;
+  height: 56px;
+  font-size: 38px;
+}
+
+.nav-maneuver-icon.left,
+.nav-maneuver-icon.right,
+.nav-maneuver-icon.uturn {
+  font-size: 34px;
+}
+
+.nav-maneuver-icon.arrive {
+  color: #059669;
+  font-size: 32px;
+}
+
+.direction-maneuver-icon {
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  background: rgb(34 211 238 / 0.12);
+  color: #67e8f9;
+  font-size: 24px;
+  box-shadow: inset 0 0 0 1px rgb(103 232 249 / 0.18);
+}
+
+.direction-maneuver-icon.left,
+.direction-maneuver-icon.right,
+.direction-maneuver-icon.uturn {
+  font-size: 22px;
+}
+
+.direction-maneuver-icon.arrive {
+  color: #6ee7b7;
 }
 
 .route-endpoint-marker {
@@ -675,6 +896,16 @@ body {
   width: 12px;
   height: 12px;
   box-shadow: 0 0 0 2px rgb(17 24 39 / 0.5), 0 0 14px rgb(239 68 68 / 0.8);
+}
+
+.route-start-leg-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: rgb(255 255 255 / 0.96);
+  border: 1px solid rgb(15 23 42 / 0.38);
+  box-shadow: 0 0 0 1px rgb(255 255 255 / 0.22), 0 0 7px rgb(255 255 255 / 0.62);
+  pointer-events: none;
 }
 
 .alternative-route-label {
