@@ -1,11 +1,5 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import maplibregl from 'maplibre-gl';
-import { Capacitor } from '@capacitor/core';
-import { LocalNotifications } from '@capacitor/local-notifications';
-import 'maplibre-gl/dist/maplibre-gl.css';
-import './index.css';
-import MobileNavigationPanel from './components/MobileNavigationPanel.jsx';
-import MobileSettingsPage from './components/MobileSettingsPage.jsx';
 import { 
   Menu, 
   MapPin, 
