@@ -65,5 +65,14 @@ export const customMapPlaces = [
     type: 'school',
     aliases: 'suchitra academy international school campus education high school school circle',
     image: ''
+  },
+  {
+    id: 'basavatarakam-cancer-hospital',
+    name: 'Basavatarakam Indo American Cancer Hospital & Research Institute',
+    coords: [17.4171079, 78.4305233],
+    address: 'Road No. 10, IAS Officers Quaters, Nandi Nagar, Banjara Hills, Hyderabad, Telangana 500034',
+    type: 'hospital',
+    aliases: 'basavatarakam indo american cancer hospital research institute banjara hills road 10 medical center oncology healthcare trust',
+    image: ''
   }
 ];
