@@ -1,9 +1,19 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import maplibregl from 'maplibre-gl';
+import { initializeApp } from 'firebase/app';
+import {
+  getAuth,
+  GoogleAuthProvider,
+  onAuthStateChanged,
+  signInWithCredential,
+  signInWithPopup,
+  signOut
+} from 'firebase/auth';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import './index.css';
 import MobileNavigationPanel from './components/MobileNavigationPanel.jsx';
 import MobileSettingsPage from './components/MobileSettingsPage.jsx';
+import { customMapPlaces } from './mapPlaces.js';
 import { 
   Menu, 
   MapPin, 
@@ -38,12 +48,61 @@ import {
 } from 'lucide-react';
 
 const NAVIGATION_NOTIFICATION_ID = 5305;
-const NAVIGATION_NOTIFICATION_CHANNEL = 'spidermaps-navigation';
+const NAVIGATION_NOTIFICATION_CHANNEL = 'spidermaps-navigation-alerts-v3';
 const NAVIGATION_NOTIFICATION_ACTION_TYPE = 'spidermaps-navigation-actions';
 const EXIT_NAVIGATION_ACTION = 'exit-navigation';
+const NAV_SNAP_TO_ROUTE_METERS = 20;
+const NAV_OFF_ROUTE_METERS = 20;
+const NAV_REROUTE_COOLDOWN_MS = 18000;
+const NAV_ARRIVAL_METERS = 35;
+const NAV_ETA_UPDATE_MIN_MS = 120000;
+const NAV_ETA_SIGNIFICANT_CHANGE_MIN = 2;
 const SPIDERMAPS_SHARE_BASE_URL = (
   import.meta.env.VITE_SPIDERMAPS_SHARE_BASE_URL || 'https://maps.m4spider.com'
 ).replace(/\/+$/, '');
+const PLACE_REQUESTS_DB_URL = 'https://m4-spider-84ed4-default-rtdb.firebaseio.com/placeRequests';
+const PLACE_REQUEST_CLOUDINARY_CLOUD_NAME = 'disxurw9d';
+const PLACE_REQUEST_CLOUDINARY_UPLOAD_PRESET = import.meta.env.VITE_CLOUDINARY_UPLOAD_PRESET || 'ml_default';
+const PLACE_REQUEST_CLOUDINARY_FOLDER = 'user_uploads';
+const REMOTE_MAP_PLACE_URLS = [
+  import.meta.env.VITE_SPIDERMAPS_REMOTE_PLACES_URL,
+  `${SPIDERMAPS_SHARE_BASE_URL}/mapPlaces.json`,
+  `${SPIDERMAPS_SHARE_BASE_URL}/maps.js`,
+  `${SPIDERMAPS_SHARE_BASE_URL}/mapPlaces.js`
+].filter(Boolean);
+const PLACE_LAYER_SOURCE_ID = 'spidermaps-places';
+const PLACE_DOT_LAYER_ID = 'spidermaps-place-dots';
+const PLACE_LABEL_LAYER_ID = 'spidermaps-place-labels';
+const PLACE_HITBOX_LAYER_ID = 'spidermaps-place-hitbox';
+const FIREBASE_CONFIG = {
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY || 'AIzaSyDC7wEdjAXhw-wg2R67emebgehFfxdmot8',
+  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN || 'm4-spider-84ed4.firebaseapp.com',
+  databaseURL: import.meta.env.VITE_FIREBASE_DATABASE_URL || 'https://m4-spider-84ed4-default-rtdb.firebaseio.com',
+  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID || 'm4-spider-84ed4',
+  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || 'm4-spider-84ed4.firebasestorage.app',
+  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || '97506528297',
+  appId: import.meta.env.VITE_FIREBASE_APP_ID || '1:97506528297:android:daa90c9447207d9c09e038'
+};
+const firebaseApp = initializeApp(FIREBASE_CONFIG);
+const firebaseAuth = getAuth(firebaseApp);
+const googleAuthProvider = new GoogleAuthProvider();
+googleAuthProvider.setCustomParameters({ prompt: 'select_account' });
+
+const signInWithNativeGoogle = async () => {
+  const nativeResult = await FirebaseAuthentication.signInWithGoogle({ skipNativeAuth: true });
+  const idToken = nativeResult.credential?.idToken;
+  if (!idToken) {
+    throw new Error('Google did not return an ID token.');
+  }
+  const credential = GoogleAuthProvider.credential(idToken);
+  return signInWithCredential(firebaseAuth, credential);
+};
+
+const isGoogleAuthCancel = (error) => {
+  const code = String(error?.code || '').toLowerCase();
+  const message = String(error?.message || '').toLowerCase();
+  return code.includes('cancel') || code.includes('abort') || message.includes('cancel') || message.includes('abort');
+};
 
 const isNativeCapacitorApp = () => {
   try {
@@ -62,46 +121,113 @@ const buildSpiderMapsShareUrl = ([lat, lng], name = '') => {
   return `${SPIDERMAPS_SHARE_BASE_URL}/?${params.toString()}`;
 };
 
-const placesDatabase = {
-  work: {
-    name: "Work (Quthbullapur)",
-    coords: [17.5025, 78.4612],
-    address: "Sudershan Reddy Nagar, Quthbullapur, Hyderabad",
-    temp: "32°C",
-    traffic: "Heavy traffic delays on primary corridors",
-    type: "work"
-  },
-  home: {
-    name: "Home (Kompally)",
-    coords: [17.5323, 78.4892],
-    address: "Plot No. 145/P, Sri Chaitanya School, Kompally",
-    temp: "30°C",
-    traffic: "Normal traffic conditions, roads clear",
-    type: "home"
-  },
-  hyderabad: {
-    name: "Hyderabad Center",
-    coords: [17.3850, 78.4867],
-    address: "Nampally Main Road, Hyderabad, Telangana",
-    temp: "31°C",
-    traffic: "Heavy traffic around central hub",
-    type: "city"
-  },
-  goa: {
-    name: "Goa District",
-    coords: [15.4909, 73.8278],
-    address: "Panaji Municipal Roadway, Goa",
-    temp: "29°C",
-    traffic: "Smooth travel speeds reported",
-    type: "city"
-  },
+const makePlaceId = (value, fallback = 'place') => {
+  const id = String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return id || fallback;
+};
+
+const parsePlaceCoords = (coords) => {
+  if (!Array.isArray(coords) || coords.length < 2) return null;
+  const lat = Number(coords[0]);
+  const lng = Number(coords[1]);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  if (Math.abs(lat) > 90 || Math.abs(lng) > 180) return null;
+  return [lat, lng];
+};
+
+const normalizePlaceRecord = (place, fallbackId, defaults = {}) => {
+  const coords = parsePlaceCoords(place?.coords);
+  if (!coords) return null;
+
+  const name = String(place?.name || defaults.name || fallbackId || 'Place').trim();
+  const id = makePlaceId(place?.id || fallbackId || name);
+
+  return {
+    ...defaults,
+    ...place,
+    id,
+    name,
+    coords,
+    address: String(place?.address || defaults.address || ''),
+    type: String(place?.type || defaults.type || 'place'),
+    temp: String(place?.temp || defaults.temp || '--'),
+    traffic: String(place?.traffic || defaults.traffic || 'Place'),
+    image: String(place?.image || defaults.image || '')
+  };
+};
+
+const buildCustomPlacesDatabase = (places, reservedIds = new Set()) => {
+  const usedIds = new Set(reservedIds);
+
+  return Object.fromEntries(
+    places
+      .map((place, index) => normalizePlaceRecord(place, `custom-place-${index + 1}`, {
+        traffic: 'Custom map place',
+        type: 'place'
+      }))
+      .filter(Boolean)
+      .map((place) => {
+        const baseId = makePlaceId(place.id || place.name, 'custom-place');
+        let id = baseId;
+        let copyIndex = 2;
+        while (usedIds.has(id)) {
+          id = `${baseId}-${copyIndex}`;
+          copyIndex += 1;
+        }
+        usedIds.add(id);
+        return [id, { ...place, id }];
+      })
+  );
+};
+
+const extractRemotePlacesFromPayload = (payload) => {
+  if (Array.isArray(payload)) return payload;
+  if (Array.isArray(payload?.places)) return payload.places;
+  if (Array.isArray(payload?.customMapPlaces)) return payload.customMapPlaces;
+  if (payload && typeof payload === 'object') {
+    return Object.entries(payload).map(([id, place]) => ({ id, ...place }));
+  }
+  return [];
+};
+
+const normalizeRemoteMapPlaces = (payload, reservedIds = new Set()) => (
+  buildCustomPlacesDatabase(extractRemotePlacesFromPayload(payload), reservedIds)
+);
+
+const loadRemoteMapPlaces = async () => {
+  let lastError = null;
+  for (const url of REMOTE_MAP_PLACE_URLS) {
+    try {
+      if (/\.m?js(?:$|\?)/i.test(url)) {
+        const module = await import(/* @vite-ignore */ `${url}${url.includes('?') ? '&' : '?'}v=${Date.now()}`);
+        return {
+          places: module.customMapPlaces || module.mapPlaces || module.places || module.default || [],
+          source: url
+        };
+      }
+
+      const payload = await fetchJsonWithTimeout(url, { cache: 'no-store' }, 8000);
+      return { places: payload, source: url };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError || new Error('No remote map places source available');
+};
+
+const builtInPlacesDatabase = {
   suprabhata: {
     name: "SUPRABHATA ARCADE-1",
-    coords: [17.5255, 78.4867],
-    address: "2, Kompally, Hyderabad, Telangana",
+    coords: [17.5472625, 78.4820781],
+    address: "GFWJ+WR4 2, Kompally, Hyderabad, Telangana 500100",
     temp: "31°C",
-    traffic: "Minor slowdowns at junction intersection",
-    type: "commercial"
+    traffic: "Verified local apartment result",
+    type: "apartment"
   },
   ambMall: {
     name: "AMB Mall Hyderabad",
@@ -161,6 +287,16 @@ const placesDatabase = {
   }
 };
 
+const customPlacesDatabase = buildCustomPlacesDatabase(
+  customMapPlaces,
+  new Set(Object.keys(builtInPlacesDatabase))
+);
+
+const bundledPlacesDatabase = {
+  ...builtInPlacesDatabase,
+  ...customPlacesDatabase
+};
+
 const DEFAULT_ACTIVE_LOCATION = {
   name: "Select a place",
   coords: [17.5177, 78.4990],
@@ -207,23 +343,23 @@ const isPreciseGpsLocation = (place) => (
   && place.name !== 'Approximate Location'
 );
 
-const SEARCH_ALIASES = {
+const BASE_SEARCH_ALIASES = {
   work: 'office job quthbullapur quthbulpur quthbulapur sudershan reddy nagar',
   home: 'house kompally kompali kompaly sri chaitanya school',
   hyderabad: 'hyd hyd centre center nampally city telangana',
   goa: 'panaji beach coastal city travel',
-  suprabhata: 'suprabatha suprabata arcade commercial shop building kompally',
+  suprabhata: 'suprabatha suprabata arcade one arcade 1 arcade-1 commercial apartment shop building kompally gfwj wr4',
   ambMall: 'amb mall amb cinemas asian mahesh babu sarath city capital mall kondapur gachibowli hyderabad cinema theatre shopping mall',
   sits: 'sidhartha siddhartha group of institutions institute technology sciences sits narapally peerzadiguda college engineering hyderabad',
   mallaReddyCollege: 'malla reddy clg college engineering institute university maisammaguda dulapally dhulapally medchal hyderabad mallareddy mrec mriet mrcet mrce',
   hmtGroundChintal: 'hmt ground hmt grounds chintal chinthal hmt colony hmt road mahendra nagar quthbullapur jeedimetla hyderabad playground sports ground',
   hpGasChintal: 'hp gas hpcl hpgas praveena gas agencies praveena gas agency chintal chinthal quthbullapur venkateswara nagar main road lpg cylinder cooking gas hyderabad',
   sriGajananaHomes: 'sri gajanana homes sri gajana gajanana home shivalayam road shivalayam rd kompally apartment residence godrej warehouse nearby',
-  alwal: 'alwal secunderabad city main road'
+  alwal: 'alwal secunderabad city main road',
+  ...Object.fromEntries(
+    Object.entries(customPlacesDatabase).map(([id, place]) => [id, place.aliases || ''])
+  )
 };
-
-const PUBLIC_SEARCH_PLACE_KEYS = [];
-const EXACT_LOCAL_SEARCH_KEYS = [];
 
 const VERIFIED_SEARCH_FALLBACKS = [
   {
@@ -240,7 +376,7 @@ const VERIFIED_SEARCH_FALLBACKS = [
   },
   {
     key: 'verified-suprabhata-arcade-1',
-    match: /\b(suprabhata|suprabatha)\s+arcade\s*-?\s*1\b|\b(gfwj\+wr4)\b|\b(gfwj\s*wr4)\b|\bsuprabhata\b.*\bkompally\b|\bsuprabatha\b.*\bkompally\b/i,
+    match: /\b(suprabhata|suprabatha|suprabata)\s+arcade\s*-?\s*(1|one)\b|\b(suprabhata|suprabatha|suprabata)\b.*\barcade\b.*\b(1|one)\b|\b(gfwj\+wr4)\b|\b(gfwj\s*wr4)\b|\b(suprabhata|suprabatha|suprabata)\b.*\bkompally\b/i,
     place: {
       name: 'SUPRABHATA ARCADE-1',
       coords: [17.5472625, 78.4820781],
@@ -346,14 +482,42 @@ const TRAVEL_MODES = [
 
 const SAVED_PLACES_DB = 'spidermaps-db';
 const SAVED_PLACES_STORE = 'savedPlaces';
+const SEARCH_HISTORY_STORE = 'searchHistory';
+const SEARCH_HISTORY_LIMIT = 20;
+
+const getSearchHistoryEntryKey = (entry) => {
+  const place = entry?.place || {};
+  const name = normalizeSearchText(place.name || entry?.query || '');
+  const address = normalizeSearchText(place.address || '');
+  const coords = parsePlaceCoords(place.coords);
+  const coordKey = coords ? coords.map((value) => value.toFixed(5)).join(',') : '';
+  return [name, coordKey, address].filter(Boolean).join('|') || normalizeSearchText(entry?.query || '');
+};
+
+const dedupeSearchHistory = (history = []) => {
+  const seen = new Set();
+  return history
+    .filter(Boolean)
+    .sort((a, b) => (b.searchedAt || 0) - (a.searchedAt || 0))
+    .filter((entry) => {
+      const key = getSearchHistoryEntryKey(entry);
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, SEARCH_HISTORY_LIMIT);
+};
 
 const openSavedPlacesDb = () => new Promise((resolve, reject) => {
-  const request = indexedDB.open(SAVED_PLACES_DB, 1);
+  const request = indexedDB.open(SAVED_PLACES_DB, 2);
 
   request.onupgradeneeded = () => {
     const db = request.result;
     if (!db.objectStoreNames.contains(SAVED_PLACES_STORE)) {
       db.createObjectStore(SAVED_PLACES_STORE, { keyPath: 'id' });
+    }
+    if (!db.objectStoreNames.contains(SEARCH_HISTORY_STORE)) {
+      db.createObjectStore(SEARCH_HISTORY_STORE, { keyPath: 'id' });
     }
   };
 
@@ -377,6 +541,64 @@ const writeSavedPlace = async (place) => {
   return new Promise((resolve, reject) => {
     const tx = db.transaction(SAVED_PLACES_STORE, 'readwrite');
     tx.objectStore(SAVED_PLACES_STORE).put(place);
+    tx.oncomplete = () => {
+      db.close();
+      resolve();
+    };
+    tx.onerror = () => reject(tx.error);
+  });
+};
+
+const deleteSavedPlace = async (id) => {
+  const db = await openSavedPlacesDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(SAVED_PLACES_STORE, 'readwrite');
+    tx.objectStore(SAVED_PLACES_STORE).delete(id);
+    tx.oncomplete = () => {
+      db.close();
+      resolve();
+    };
+    tx.onerror = () => reject(tx.error);
+  });
+};
+
+const readSearchHistory = async () => {
+  const db = await openSavedPlacesDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(SEARCH_HISTORY_STORE, 'readonly');
+    const request = tx.objectStore(SEARCH_HISTORY_STORE).getAll();
+    request.onsuccess = () => resolve(dedupeSearchHistory(request.result || []));
+    request.onerror = () => reject(request.error);
+    tx.oncomplete = () => db.close();
+  });
+};
+
+const writeSearchHistoryEntry = async (entry) => {
+  const db = await openSavedPlacesDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(SEARCH_HISTORY_STORE, 'readwrite');
+    const store = tx.objectStore(SEARCH_HISTORY_STORE);
+    store.put(entry);
+    const request = store.getAll();
+    request.onsuccess = () => {
+      const keepIds = new Set(dedupeSearchHistory(request.result || []).map((item) => item.id));
+      (request.result || [])
+        .filter((item) => !keepIds.has(item.id))
+        .forEach((oldEntry) => store.delete(oldEntry.id));
+    };
+    tx.oncomplete = () => {
+      db.close();
+      resolve();
+    };
+    tx.onerror = () => reject(tx.error);
+  });
+};
+
+const deleteSearchHistoryEntry = async (id) => {
+  const db = await openSavedPlacesDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(SEARCH_HISTORY_STORE, 'readwrite');
+    tx.objectStore(SEARCH_HISTORY_STORE).delete(id);
     tx.oncomplete = () => {
       db.close();
       resolve();
@@ -816,35 +1038,28 @@ const getSearchScore = (query, text) => {
 const toLngLat = ([lat, lng]) => [lng, lat];
 
 const spiderMarkerSvg = (className = '') => `
-  <svg class="spider-marker-svg ${className}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-    <polygon points="12 4, 15 7, 15 15, 12 18, 9 15, 9 7" fill="currentColor" fill-opacity="0.15" />
-    <circle cx="12" cy="12" r="3.5" fill="currentColor" fill-opacity="0.1" />
-    <path d="M12 4 L12 18" stroke-width="1" stroke-dasharray="2 2" opacity="0.7" />
-    <path d="M9 7 L3 1 L1 4" />
-    <path d="M9 10 L2 5 L0 9" />
-    <path d="M15 7 L21 1 L23 4" />
-    <path d="M15 10 L22 5 L24 9" />
-    <path d="M9 15 L3 23 L1 20" />
-    <path d="M9 12 L2 17 L0 13" />
-    <path d="M15 15 L21 23 L23 20" />
-    <path d="M15 12 L22 17 L24 13" />
-    <circle cx="10.5" cy="5.5" r="0.5" fill="currentColor" />
-    <circle cx="13.5" cy="5.5" r="0.5" fill="currentColor" />
+  <svg class="spider-marker-svg ${className}" viewBox="0 0 36 36" fill="none" aria-hidden="true">
+    <path d="M18 10.2c2.4 0 4.4 2.2 4.4 5v6.1c0 3-2 5.4-4.4 5.4s-4.4-2.4-4.4-5.4v-6.1c0-2.8 2-5 4.4-5Z" fill="#0f172a" stroke="currentColor" stroke-width="2.2" />
+    <path d="M18 8.3c1.8 0 3.2 1.2 3.2 2.8s-1.4 2.8-3.2 2.8-3.2-1.2-3.2-2.8 1.4-2.8 3.2-2.8Z" fill="#0f172a" stroke="currentColor" stroke-width="2" />
+    <path d="M16.8 14.6v10.1M19.2 14.6v10.1" stroke="currentColor" stroke-width="1.1" stroke-linecap="round" opacity="0.75" />
+    <path d="M14.2 14.3 8.5 10.2 5.2 12.4M13.8 17.2 7.1 15.3 4.4 18M14.2 20.1 7.5 22.2 5.4 25.5M15.1 22.8 10.8 27.8 11.6 31" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+    <path d="M21.8 14.3 27.5 10.2 30.8 12.4M22.2 17.2 28.9 15.3 31.6 18M21.8 20.1 28.5 22.2 30.6 25.5M20.9 22.8 25.2 27.8 24.4 31" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+    <circle cx="16.9" cy="10.7" r="0.65" fill="#dbeafe" />
+    <circle cx="19.1" cy="10.7" r="0.65" fill="#dbeafe" />
   </svg>
 `;
 
 const vehicleMarkerSvg = (className = '') => `
   <svg class="vehicle-marker-svg ${className}" viewBox="0 0 48 48" fill="none" aria-hidden="true">
-    <ellipse cx="24" cy="39" rx="15" ry="5" fill="black" opacity="0.2" />
-    <path d="M9 29 C9 20 13 9 24 5 C35 9 39 20 39 29 L36 39 C33 44 15 44 12 39 L9 29Z" fill="#f8fafc" stroke="#dbeafe" stroke-width="2" />
-    <path d="M16 18 C18 12 22 9 24 8 C26 9 30 12 32 18 L29 25 L19 25 L16 18Z" fill="#bfdbfe" stroke="#93c5fd" stroke-width="1.4" />
-    <path d="M14 29 C17 26 20 25 24 25 C28 25 31 26 34 29 L32 37 C27 40 21 40 16 37 L14 29Z" fill="#e2e8f0" />
-    <path d="M10 30 L5 35 L11 35" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.4" />
-    <path d="M38 30 L43 35 L37 35" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.4" />
-    <circle cx="17" cy="32" r="2" fill="#fef3c7" />
-    <circle cx="31" cy="32" r="2" fill="#fef3c7" />
+    <path d="M24 6 L37 42 L24 34 L11 42 L24 6Z" fill="#111827" stroke="#ffffff" stroke-width="3" stroke-linejoin="round" />
+    <path d="M24 12 L32 34 L24 29 L16 34 L24 12Z" fill="#06b6d4" />
+    <path d="M24 12 L24 29" stroke="#e0f2fe" stroke-width="2.5" stroke-linecap="round" opacity="0.85" />
   </svg>
 `;
+
+const NAV_ARROW_SOURCE_ID = 'navigation-arrow-source';
+const NAV_ARROW_LAYER_ID = 'navigation-arrow-layer';
+const NAV_ARROW_IMAGE_ID = 'navigation-arrow-icon';
 
 const getDistanceMeters = (a, b) => {
   const [lat1, lng1] = a;
@@ -896,15 +1111,33 @@ const projectCoordinate = (coords, heading = 0, meters = 0) => {
   return [(lat2 * 180) / Math.PI, (lng2 * 180) / Math.PI];
 };
 
+const getManeuverTurnAngle = (maneuver = {}) => {
+  const before = Number(maneuver.bearing_before);
+  const after = Number(maneuver.bearing_after);
+  if (!Number.isFinite(before) || !Number.isFinite(after)) return null;
+  const diff = Math.abs(((after - before + 540) % 360) - 180);
+  return diff;
+};
+
+const isSoftManeuverTurn = (maneuver = {}) => {
+  const modifier = String(maneuver.modifier || '').toLowerCase();
+  const angle = getManeuverTurnAngle(maneuver);
+  return modifier.includes('slight') || (Number.isFinite(angle) && angle < 35);
+};
+
 const formatRouteInstruction = (step) => {
   const maneuver = step?.maneuver || {};
   const roadName = step?.name ? ` ${step.name}` : '';
   const modifier = maneuver.modifier || '';
   const distance = step?.distance ? Math.max(10, Math.round(step.distance / 10) * 10) : 0;
   const distanceText = distance ? `${distance} m` : 'soon';
+  const softTurn = isSoftManeuverTurn(maneuver);
 
   if (maneuver.type === 'arrive') return 'Arrive at destination';
   if (maneuver.type === 'depart') return `Go straight${roadName}`;
+  if ((modifier.includes('left') || modifier.includes('right')) && softTurn) {
+    return `Continue for ${distanceText}${roadName}`;
+  }
   if (modifier.includes('left')) return `Turn left in ${distanceText}${roadName}`;
   if (modifier.includes('right')) return `Turn right in ${distanceText}${roadName}`;
   if (modifier.includes('straight')) return `Go straight for ${distanceText}${roadName}`;
@@ -922,6 +1155,13 @@ const getNearestRouteDistance = (point, routeCoordinates = []) => (
   routeCoordinates.reduce((nearest, routePoint) => (
     Math.min(nearest, getDistanceMeters(point, routePoint))
   ), Number.POSITIVE_INFINITY)
+);
+
+const getRouteLengthMeters = (routeCoordinates = []) => (
+  routeCoordinates.reduce((sum, point, index, coordinates) => {
+    if (index === 0) return 0;
+    return sum + getDistanceMeters(coordinates[index - 1], point);
+  }, 0)
 );
 
 const getRouteProgress = (point, routeCoordinates = []) => {
@@ -1048,6 +1288,48 @@ const getManeuverDisplay = (instruction = '') => {
   if (/\bright\b/.test(text)) return { symbol: '\u21b1', label: 'Turn right', icon: 'ic_nav_turn_right' };
   if (/\bstraight\b|\bcontinue\b|\btowards\b/.test(text)) return { symbol: '\u2191', label: 'Go straight', icon: 'ic_nav_straight' };
   return { symbol: '\u279c', label: 'Navigation', icon: 'ic_nav_straight' };
+};
+
+const getNavigationVoiceManeuver = (instruction = '') => {
+  const text = String(instruction || '').toLowerCase();
+  if (/\barriv/.test(text)) return 'arrived';
+  if (/\brerout|\boff route\b/.test(text)) return 'rerouting';
+  if (/\bu[-\s]?turn\b|\bmake a u\b/.test(text)) return 'u_turn';
+  if (/\bleft\b/.test(text)) return 'turn_left';
+  if (/\bright\b/.test(text)) return 'turn_right';
+  if (/\broundabout\b/.test(text)) return 'roundabout';
+  if (/\bstraight\b|\bcontinue\b|\btowards\b/.test(text)) return 'continue_straight';
+  return null;
+};
+
+const getNavigationVoiceDistanceMeters = (instruction = '') => {
+  const match = String(instruction || '').toLowerCase().match(/\b(?:in|for)\s+(\d+(?:\.\d+)?)\s*(m|meter|meters|km|kilometer|kilometers)\b/);
+  if (!match) return null;
+  const value = Number(match[1]);
+  if (!Number.isFinite(value)) return null;
+  return match[2].startsWith('km') || match[2].startsWith('kilometer') ? value * 1000 : value;
+};
+
+const getNavigationVoiceDistanceClip = (meters) => {
+  if (!Number.isFinite(meters)) return null;
+  const availableMeters = [
+    5, 10, 15, 20, 25, 30, 40, 50, 60, 70, 80, 90,
+    100, 150, 200, 250, 300, 350, 400, 450, 500,
+    550, 600, 650, 700, 750, 800, 850, 900, 950
+  ];
+  const roundedMeters = Math.max(5, Math.min(950, Math.round(meters / 5) * 5));
+  const closestMeters = availableMeters.reduce((closest, candidate) => (
+    Math.abs(candidate - roundedMeters) < Math.abs(closest - roundedMeters) ? candidate : closest
+  ), availableMeters[0]);
+
+  return `in_${closestMeters}_meters`;
+};
+
+const getNavigationVoiceDistanceBucket = (meters) => {
+  if (!Number.isFinite(meters)) return 'soon';
+  if (meters > 250) return 'start';
+  if (meters > 80) return 'middle';
+  return 'end';
 };
 
 const makeCirclePolygon = ([lat, lng], radiusMeters, steps = 48) => {
@@ -1279,6 +1561,8 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [activeLocation, setActiveLocation] = useState(DEFAULT_ACTIVE_LOCATION);
   const [savedPlaces, setSavedPlaces] = useState([]);
+  const [remoteMapPlaces, setRemoteMapPlaces] = useState({});
+  const [searchHistory, setSearchHistory] = useState([]);
   const [globalSuggestions, setGlobalSuggestions] = useState([]);
   const [searchCenterOverride, setSearchCenterOverride] = useState(null);
   const [globalSearchLoading, setGlobalSearchLoading] = useState(false);
@@ -1308,10 +1592,17 @@ export default function App() {
   const [constructionActive, setConstructionActive] = useState(true);
   const [spiderGridActive, setSpiderGridActive] = useState(false);
   const [toast, setToast] = useState({ show: false, title: '', body: '', isWarning: false });
+  const [authUser, setAuthUser] = useState(null);
+  const [authBusy, setAuthBusy] = useState(false);
+  const [placeRequestOpen, setPlaceRequestOpen] = useState(false);
+  const [placeRequestForm, setPlaceRequestForm] = useState({ name: '', address: '' });
+  const [placeRequestImage, setPlaceRequestImage] = useState(null);
+  const [placeRequestSubmitting, setPlaceRequestSubmitting] = useState(false);
 
   const mapRef = useRef(null);
   const leafletMapInstance = useRef(null);
   const markersLayerGroup = useRef([]);
+  const placeLayerClickHandlerRef = useRef(null);
   const constructionLayerGroup = useRef([]);
   const userLayerGroup = useRef([]);
   const alternativeRouteMarkersGroup = useRef([]);
@@ -1323,6 +1614,9 @@ export default function App() {
   const navTelemetryRef = useRef({ lastCoords: null, rawCoords: null, filteredCoords: null, displayCoords: null, coveredMeters: 0, heading: 0, startedAt: null, averageSpeedKmh: 0 });
   const navRerouteRef = useRef({ lastRerouteAt: 0, offRouteHits: 0, currentStepIndex: 0 });
   const navProgressRef = useRef({ lastProgressMeters: 0, lastRemainingMeters: null, arrived: false });
+  const navEtaRef = useRef({ minutes: null, lastUpdatedAt: 0 });
+  const navCameraRef = useRef({ lastEaseAt: 0, lastCenter: null });
+  const navRouteMetaUiRef = useRef({ lastUpdatedAt: 0, key: '' });
   const routeInteractionLockedRef = useRef(false);
   const activeBaseStyleRef = useRef(mapStyle);
   const audioCtxRef = useRef(null);
@@ -1332,11 +1626,22 @@ export default function App() {
   const navigationNotificationsReadyRef = useRef(false);
   const navigationNotificationShownRef = useRef(false);
   const navigationNotificationLastMetaRef = useRef('');
+  const navigationNotificationLastUpdateAtRef = useRef(0);
+  const navigationVoiceRef = useRef({ key: '', queue: Promise.resolve(), missing: new Set(), started: false, arrived: false, stepKey: '', buckets: new Set() });
+  const navigationPreviewStepRef = useRef(null);
   const latestRouteMetaRef = useRef(null);
   const latestActiveLocationRef = useRef(DEFAULT_ACTIVE_LOCATION);
   const latestMobileModeRef = useRef('place');
   const exitNavigationRef = useRef(null);
   const arrivalUnlockTimerRef = useRef(null);
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(firebaseAuth, (user) => {
+      setAuthUser(user);
+    });
+
+    return unsubscribe;
+  }, []);
 
   const clearSearchState = () => {
     setSearchQuery('');
@@ -1347,18 +1652,218 @@ export default function App() {
   };
 
   useEffect(() => {
+    let cancelled = false;
+
+    loadRemoteMapPlaces()
+      .then(({ places, source }) => {
+        if (cancelled) return;
+        const normalizedPlaces = normalizeRemoteMapPlaces(
+          places,
+          new Set(Object.keys(bundledPlacesDatabase))
+        );
+        setRemoteMapPlaces(normalizedPlaces);
+        console.info(`Loaded remote map places from ${source}`);
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setRemoteMapPlaces({});
+          console.info('Remote map places unavailable; using bundled places.', error);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const rememberSearch = async (query, place = null) => {
+    const cleanedQuery = String(query || place?.name || '').trim();
+    if (cleanedQuery.length < 2) return;
+
+    const entryId = normalizeSearchText(cleanedQuery).replace(/\s+/g, '-').slice(0, 90) || `search-${Date.now()}`;
+    const entry = {
+      id: entryId,
+      query: cleanedQuery,
+      searchedAt: Date.now(),
+      place: place?.coords ? {
+        name: place.name || cleanedQuery,
+        address: place.address || '',
+        coords: place.coords,
+        type: place.type || 'search'
+      } : null
+    };
+
+    setSearchHistory((current) => dedupeSearchHistory([
+      entry,
+      ...current.filter((item) => item.id !== entry.id)
+    ]));
+
+    try {
+      await writeSearchHistoryEntry(entry);
+    } catch (error) {
+      console.warn('Could not save search history', error);
+    }
+  };
+
+  const handleDeleteSearchHistory = async (entryId, event) => {
+    event?.stopPropagation?.();
+    playClickSound();
+    setSearchHistory((current) => current.filter((entry) => entry.id !== entryId));
+    try {
+      await deleteSearchHistoryEntry(entryId);
+      triggerToast("History Deleted", "Search removed from this browser.", false);
+    } catch {
+      triggerToast("Delete Failed", "Could not delete this search from history.", true);
+    }
+  };
+
+  const handleDeleteSavedPlace = async (placeId, event) => {
+    event?.stopPropagation?.();
+    playClickSound();
+    setSavedPlaces((current) => current.filter((place) => place.id !== placeId));
+    if (routeStartKey === placeId) {
+      setRouteStartKey('gps');
+    }
+    try {
+      await deleteSavedPlace(placeId);
+      triggerToast("Place Deleted", "Saved place removed from this browser.", false);
+    } catch {
+      triggerToast("Delete Failed", "Could not delete this saved place.", true);
+    }
+  };
+
+  const handleSelectSearchHistory = (entry) => {
+    playClickSound();
+    if (entry.place?.coords) {
+      setSearchQuery(entry.place.name || entry.query);
+      handleSelectLocation(entry.place);
+      return;
+    }
+    setSearchQuery(entry.query);
+    setMobileSheetOpen(true);
+    setMobileMode('place');
+  };
+
+  useEffect(() => {
     routeInteractionLockedRef.current = mobileMode === 'nav' || routeActive;
   }, [mobileMode, routeActive]);
 
-  const renderUserLocationMarker = (coords, { label = 'Your Location', heading = 0, variant = '' } = {}) => {
+  const clearNavigationArrowLayer = () => {
+    const map = leafletMapInstance.current;
+    if (!map) return;
+    if (map.getLayer(NAV_ARROW_LAYER_ID)) map.removeLayer(NAV_ARROW_LAYER_ID);
+    if (map.getSource(NAV_ARROW_SOURCE_ID)) map.removeSource(NAV_ARROW_SOURCE_ID);
+  };
+
+  const bringNavigationArrowToFront = () => {
+    const map = leafletMapInstance.current;
+    if (!map?.getLayer?.(NAV_ARROW_LAYER_ID)) return;
+    try {
+      map.moveLayer(NAV_ARROW_LAYER_ID);
+    } catch {
+      // Layer ordering is best-effort because style reloads can remove layers mid-frame.
+    }
+  };
+
+  const ensureNavigationArrowImage = (map) => {
+    if (!map || map.hasImage?.(NAV_ARROW_IMAGE_ID)) return;
+    const size = 128;
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    ctx.save();
+    ctx.translate(size / 2, size / 2);
+    ctx.shadowColor = 'rgba(6, 182, 212, 0.95)';
+    ctx.shadowBlur = 24;
+    ctx.beginPath();
+    ctx.moveTo(0, -48);
+    ctx.lineTo(38, 50);
+    ctx.lineTo(0, 28);
+    ctx.lineTo(-38, 50);
+    ctx.closePath();
+    ctx.fillStyle = '#111827';
+    ctx.fill();
+    ctx.lineWidth = 9;
+    ctx.lineJoin = 'round';
+    ctx.strokeStyle = '#ffffff';
+    ctx.stroke();
+
+    ctx.shadowBlur = 0;
+    ctx.beginPath();
+    ctx.moveTo(0, -34);
+    ctx.lineTo(22, 34);
+    ctx.lineTo(0, 20);
+    ctx.lineTo(-22, 34);
+    ctx.closePath();
+    ctx.fillStyle = '#06b6d4';
+    ctx.fill();
+    ctx.restore();
+
+    map.addImage(NAV_ARROW_IMAGE_ID, ctx.getImageData(0, 0, size, size), { pixelRatio: 2 });
+  };
+
+  const renderNavigationArrowLayer = (coords, { heading = 0 } = {}) => {
     const map = leafletMapInstance.current;
     if (!map || !coords) return;
 
     userLayerGroup.current.forEach((marker) => marker.remove());
     userLayerGroup.current = [];
+    ensureNavigationArrowImage(map);
+
+    const data = {
+      type: 'FeatureCollection',
+      features: [{
+        type: 'Feature',
+        geometry: { type: 'Point', coordinates: toLngLat(coords) },
+        properties: { heading: Number.isFinite(heading) ? heading : 0 }
+      }]
+    };
+
+    const source = map.getSource(NAV_ARROW_SOURCE_ID);
+    if (source?.setData) {
+      source.setData(data);
+    } else {
+      map.addSource(NAV_ARROW_SOURCE_ID, { type: 'geojson', data });
+    }
+
+    if (!map.getLayer(NAV_ARROW_LAYER_ID)) {
+      map.addLayer({
+        id: NAV_ARROW_LAYER_ID,
+        type: 'symbol',
+        source: NAV_ARROW_SOURCE_ID,
+        layout: {
+          'icon-image': NAV_ARROW_IMAGE_ID,
+          'icon-size': 0.72,
+          'icon-rotate': ['get', 'heading'],
+          'icon-rotation-alignment': 'map',
+          'icon-pitch-alignment': 'map',
+          'icon-anchor': 'center',
+          'icon-allow-overlap': true,
+          'icon-ignore-placement': true
+        }
+      });
+    }
+    bringNavigationArrowToFront();
+  };
+
+  const renderUserLocationMarker = (coords, { label = 'Your Location', heading = 0, variant = '' } = {}) => {
+    const map = leafletMapInstance.current;
+    if (!map || !coords) return;
+
+    const isNavigationMarker = variant.split(/\s+/).includes('nav-live');
+    if (isNavigationMarker) {
+      renderNavigationArrowLayer(coords, { heading });
+      return;
+    }
+
+    clearNavigationArrowLayer();
+    userLayerGroup.current.forEach((marker) => marker.remove());
+    userLayerGroup.current = [];
 
     const userIcon = document.createElement('div');
-    const isNavigationMarker = variant.split(/\s+/).includes('nav-live');
     userIcon.className = `gps-marker ${isNavigationMarker ? 'vehicle-gps-marker' : 'spider-gps-marker'} ${variant}`.trim();
     userIcon.style.setProperty('--gps-heading', `${Math.round(heading || 0)}deg`);
     userIcon.innerHTML = isNavigationMarker
@@ -1372,27 +1877,48 @@ export default function App() {
     userLayerGroup.current.push(marker);
   };
 
+  const placesDatabase = useMemo(() => ({
+    ...bundledPlacesDatabase,
+    ...remoteMapPlaces
+  }), [remoteMapPlaces]);
+
+  const searchAliases = useMemo(() => ({
+    ...BASE_SEARCH_ALIASES,
+    ...Object.fromEntries(
+      Object.entries(remoteMapPlaces).map(([id, place]) => [id, place.aliases || ''])
+    )
+  }), [remoteMapPlaces]);
+
+  const publicSearchPlaceKeys = useMemo(() => Object.keys(placesDatabase), [placesDatabase]);
+  const exactLocalSearchKeys = publicSearchPlaceKeys;
+
   const searchablePlaces = useMemo(() => (
     [
-      ...PUBLIC_SEARCH_PLACE_KEYS.map((key) => ({ key, place: placesDatabase[key] })),
-      ...savedPlaces.map((place) => ({ key: place.id, place }))
-    ].map(({ key, place }) => ({
+      ...publicSearchPlaceKeys.map((key) => ({ key, place: placesDatabase[key] })),
+      ...savedPlaces
+        .map((place, index) => normalizePlaceRecord(place, place?.id || `saved-place-${index + 1}`, {
+          traffic: 'Saved place',
+          type: 'saved'
+        }))
+        .filter(Boolean)
+        .map((place) => ({ key: place.id, place }))
+    ].filter(({ place }) => parsePlaceCoords(place?.coords)).map(({ key, place }) => ({
       key,
       place,
-      text: `${place.name} ${place.address} ${place.type} ${SEARCH_ALIASES[key] || ''}`
+      text: `${place.name || ''} ${place.address || ''} ${place.type || ''} ${searchAliases[key] || ''}`
     }))
-  ), [savedPlaces]);
+  ), [placesDatabase, publicSearchPlaceKeys, savedPlaces, searchAliases]);
 
   const exactLocalSearchPlaces = useMemo(() => (
-    EXACT_LOCAL_SEARCH_KEYS.map((key) => {
+    exactLocalSearchKeys.map((key) => {
       const place = placesDatabase[key];
       return {
         key,
         place,
-        text: `${place.name} ${place.address} ${place.type} ${SEARCH_ALIASES[key] || ''}`
+        text: `${place?.name || ''} ${place?.address || ''} ${place?.type || ''} ${searchAliases[key] || ''}`
       };
-    })
-  ), []);
+    }).filter((item) => parsePlaceCoords(item.place?.coords))
+  ), [exactLocalSearchKeys, placesDatabase, searchAliases]);
 
   const searchSuggestions = useMemo(() => {
     if (!searchQuery.trim()) return [];
@@ -1457,15 +1983,43 @@ export default function App() {
       .slice(0, 7);
   }, [exactLocalSearchPlaces, globalSuggestions, searchCenterOverride, searchQuery, searchablePlaces]);
 
+  const searchHistorySuggestions = useMemo(() => (
+    searchHistory
+      .map((entry) => {
+        return {
+          key: `history-${entry.id}`,
+          source: 'history',
+          score: 10,
+          entry,
+          place: entry.place?.coords ? {
+            ...entry.place,
+            name: entry.place.name || entry.query,
+            address: entry.place.address || 'Recent search',
+            type: entry.place.type || 'history'
+          } : {
+            name: entry.query,
+            address: 'Recent search',
+            coords: null,
+            type: 'history'
+          }
+        };
+      })
+  ), [searchHistory]);
+
   const routeSearchOptions = useMemo(() => {
     if (searchQuery.trim()) return searchSuggestions;
 
-    return searchablePlaces.slice(0, 7).map((item, index) => ({
+    const recentPlaces = searchHistorySuggestions
+      .filter((item) => item.place?.coords)
+      .slice(0, 5);
+    const quickPlaces = searchablePlaces.slice(0, 7).map((item, index) => ({
       ...item,
       source: 'quick',
       score: 20 - index
     }));
-  }, [searchQuery, searchSuggestions, searchablePlaces]);
+
+    return [...recentPlaces, ...quickPlaces].slice(0, 7);
+  }, [searchHistorySuggestions, searchQuery, searchSuggestions, searchablePlaces]);
 
   const routeStartPlace = useMemo(() => (
     savedPlaces.find((place) => place.id === routeStartKey) || null
@@ -1647,7 +2201,9 @@ export default function App() {
         setGlobalSuggestions(
           [...mapSuggestions, ...providerSuggestions, ...fallbackSuggestions]
             .filter((suggestion) => {
-              const key = `${normalizeSearchText(suggestion.place.name)}-${suggestion.place.coords.map((value) => value.toFixed(3)).join(',')}`;
+              const coords = parsePlaceCoords(suggestion?.place?.coords);
+              if (!coords) return false;
+              const key = `${normalizeSearchText(suggestion.place.name)}-${coords.map((value) => value.toFixed(3)).join(',')}`;
               if (seen.has(key)) return false;
               seen.add(key);
               return true;
@@ -1684,7 +2240,9 @@ export default function App() {
         setGlobalSuggestions((current) => {
           const seen = new Set();
           return [...mapSuggestions, ...current].filter((suggestion) => {
-            const key = `${normalizeSearchText(suggestion.place.name)}-${suggestion.place.coords.map((value) => value.toFixed(3)).join(',')}`;
+            const coords = parsePlaceCoords(suggestion?.place?.coords);
+            if (!coords) return false;
+            const key = `${normalizeSearchText(suggestion.place.name)}-${coords.map((value) => value.toFixed(3)).join(',')}`;
             if (seen.has(key)) return false;
             seen.add(key);
             return true;
@@ -1702,12 +2260,22 @@ export default function App() {
   useEffect(() => {
     let cancelled = false;
 
-    readSavedPlaces()
-      .then((places) => {
-        if (!cancelled) setSavedPlaces(places);
+    Promise.all([readSavedPlaces(), readSearchHistory()])
+      .then(([places, history]) => {
+        if (!cancelled) {
+          setSavedPlaces(
+            places
+              .map((place, index) => normalizePlaceRecord(place, place?.id || `saved-place-${index + 1}`, {
+                traffic: 'Saved place',
+                type: 'saved'
+              }))
+              .filter(Boolean)
+          );
+          setSearchHistory(dedupeSearchHistory(history));
+        }
       })
       .catch(() => {
-        if (!cancelled) triggerToast("Saved Places", "Could not load saved places from this browser.", true);
+        if (!cancelled) triggerToast("Local Storage", "Could not load saved places or search history from this browser.", true);
       });
 
     return () => {
@@ -1795,6 +2363,7 @@ export default function App() {
     return () => {
       cancelled = true;
       markersLayerGroup.current.forEach((marker) => marker.remove());
+      clearPlaceLayers();
       constructionLayerGroup.current.forEach((marker) => marker.remove());
       userLayerGroup.current.forEach((marker) => marker.remove());
       leafletMapInstance.current?.remove();
@@ -1870,7 +2439,7 @@ export default function App() {
 
   useEffect(() => {
     renderMarkers();
-  }, [savedPlaces, leafletLoaded]);
+  }, [savedPlaces, remoteMapPlaces, leafletLoaded]);
 
   useEffect(() => {
     if (spiderGridActive) {
@@ -1886,6 +2455,19 @@ export default function App() {
     if (!map) return;
     if (map.getLayer(id)) map.removeLayer(id);
     if (map.getSource(id)) map.removeSource(id);
+  };
+
+  const clearPlaceLayers = () => {
+    const map = leafletMapInstance.current;
+    if (!map) return;
+    if (placeLayerClickHandlerRef.current && map.getLayer(PLACE_HITBOX_LAYER_ID)) {
+      map.off('click', PLACE_HITBOX_LAYER_ID, placeLayerClickHandlerRef.current);
+      placeLayerClickHandlerRef.current = null;
+    }
+    [PLACE_HITBOX_LAYER_ID, PLACE_LABEL_LAYER_ID, PLACE_DOT_LAYER_ID].forEach((id) => {
+      if (map.getLayer(id)) map.removeLayer(id);
+    });
+    if (map.getSource(PLACE_LAYER_SOURCE_ID)) map.removeSource(PLACE_LAYER_SOURCE_ID);
   };
 
   const clearRouteLine = () => {
@@ -1974,26 +2556,6 @@ export default function App() {
     });
   };
 
-  const renderRouteStartLeg = (rawCoords, displayCoords) => {
-    const map = leafletMapInstance.current;
-    if (!map) return;
-    clearRouteStartLeg();
-    if (!rawCoords || !displayCoords) return;
-    const distanceMeters = getDistanceMeters(rawCoords, displayCoords);
-    if (distanceMeters < 8 || distanceMeters > 1200) return;
-
-    const dotCount = Math.min(44, Math.max(5, Math.round(distanceMeters / 18)));
-    routeStartLegMarkersGroup.current = Array.from({ length: dotCount }, (_, index) => {
-      const ratio = dotCount === 1 ? 1 : index / (dotCount - 1);
-      const point = blendCoordinates(rawCoords, displayCoords, ratio);
-      const dot = document.createElement('div');
-      dot.className = 'route-start-leg-dot';
-      return new maplibregl.Marker({ element: dot, anchor: 'center' })
-        .setLngLat(toLngLat(point))
-        .addTo(map);
-    });
-  };
-
   const renderRouteLine = (routeCoordinates) => {
     const map = leafletMapInstance.current;
     if (!map || !routeCoordinates?.length) return;
@@ -2028,6 +2590,22 @@ export default function App() {
       },
       layout: { 'line-cap': 'round', 'line-join': 'round' }
     }, 'route-line');
+    bringNavigationArrowToFront();
+  };
+
+  const setRoutePreviewStyle = () => {
+    const map = leafletMapInstance.current;
+    if (!map) return;
+    if (map.getLayer('route-line')) {
+      map.setPaintProperty('route-line', 'line-color', '#1d4ed8');
+      map.setPaintProperty('route-line', 'line-width', 7);
+      map.setPaintProperty('route-line', 'line-opacity', 0.96);
+    }
+    if (map.getLayer('route-line-casing')) {
+      map.setPaintProperty('route-line-casing', 'line-color', '#93c5fd');
+      map.setPaintProperty('route-line-casing', 'line-width', 11);
+      map.setPaintProperty('route-line-casing', 'line-opacity', 0.34);
+    }
   };
 
   const renderAlternativeRoutes = (alternatives = []) => {
@@ -2094,20 +2672,134 @@ export default function App() {
     if (!map || !leafletLoaded) return;
     markersLayerGroup.current.forEach((marker) => marker.remove());
     markersLayerGroup.current = [];
+    clearPlaceLayers();
 
-    savedPlaces.forEach((item) => {
-      const el = document.createElement('div');
-      el.className = `spider-map-marker ${item.type}`;
-      el.innerHTML = '<span></span>';
-      el.addEventListener('click', (event) => {
-        event.stopPropagation();
-        handleSelectLocation(item);
-      });
-      const marker = new maplibregl.Marker({ element: el, anchor: 'center' })
-        .setLngLat(toLngLat(item.coords))
-        .addTo(map);
-      markersLayerGroup.current.push(marker);
+    const databasePlaces = Object.entries(placesDatabase)
+      .map(([id, place]) => ({ id, ...place }))
+      .filter((place) => Array.isArray(place.coords));
+
+    const placeFeatures = [...databasePlaces, ...savedPlaces]
+      .filter((item) => Array.isArray(item.coords))
+      .map((item) => ({
+        type: 'Feature',
+        geometry: { type: 'Point', coordinates: toLngLat(item.coords) },
+        properties: {
+          id: item.id || '',
+          name: item.name || 'Place',
+          address: item.address || '',
+          temp: item.temp || '--',
+          traffic: item.traffic || 'Place',
+          type: item.type || 'place',
+          image: item.image || ''
+        }
+      }));
+
+    map.addSource(PLACE_LAYER_SOURCE_ID, {
+      type: 'geojson',
+      data: {
+        type: 'FeatureCollection',
+        features: placeFeatures
+      }
     });
+
+    map.addLayer({
+      id: PLACE_DOT_LAYER_ID,
+      type: 'circle',
+      source: PLACE_LAYER_SOURCE_ID,
+      minzoom: 11.5,
+      paint: {
+        'circle-radius': [
+          'interpolate',
+          ['linear'],
+          ['zoom'],
+          11.5, 3,
+          14, 4.5,
+          17, 6
+        ],
+        'circle-color': [
+          'match',
+          ['get', 'type'],
+          'work', '#f59e0b',
+          'home', '#22c55e',
+          '#22d3ee'
+        ],
+        'circle-stroke-color': [
+          'case',
+          ['==', ['get', 'type'], 'home'], '#052e16',
+          ['==', ['get', 'type'], 'work'], '#451a03',
+          '#062024'
+        ],
+        'circle-stroke-width': 1.8,
+        'circle-opacity': [
+          'interpolate',
+          ['linear'],
+          ['zoom'],
+          11.5, 0.75,
+          15, 0.95
+        ]
+      }
+    });
+
+    map.addLayer({
+      id: PLACE_LABEL_LAYER_ID,
+      type: 'symbol',
+      source: PLACE_LAYER_SOURCE_ID,
+      minzoom: 15,
+      layout: {
+        'text-field': ['get', 'name'],
+        'text-font': ['Noto Sans Regular'],
+        'text-size': [
+          'interpolate',
+          ['linear'],
+          ['zoom'],
+          15, 11,
+          17, 13
+        ],
+        'text-offset': [0, 1.05],
+        'text-anchor': 'top',
+        'text-allow-overlap': false,
+        'text-ignore-placement': false
+      },
+      paint: {
+        'text-color': '#f8fafc',
+        'text-halo-color': '#020617',
+        'text-halo-width': 1.35,
+        'text-halo-blur': 0.2
+      }
+    });
+
+    map.addLayer({
+      id: PLACE_HITBOX_LAYER_ID,
+      type: 'circle',
+      source: PLACE_LAYER_SOURCE_ID,
+      minzoom: 10.5,
+      paint: {
+        'circle-radius': 18,
+        'circle-color': '#ffffff',
+        'circle-opacity': 0
+      }
+    });
+
+    const handlePlaceLayerClick = (event) => {
+      const feature = event.features?.[0];
+      if (!feature) return;
+      event.originalEvent?.stopPropagation?.();
+      const props = feature.properties || {};
+      const coords = feature.geometry?.coordinates;
+      if (!Array.isArray(coords)) return;
+      handleSelectLocation({
+        id: props.id,
+        name: props.name,
+        address: props.address,
+        temp: props.temp,
+        traffic: props.traffic,
+        type: props.type,
+        image: props.image,
+        coords: [coords[1], coords[0]]
+      });
+    };
+    map.on('click', PLACE_HITBOX_LAYER_ID, handlePlaceLayerClick);
+    placeLayerClickHandlerRef.current = handlePlaceLayerClick;
   };
 
   const renderIncidents = () => {
@@ -2316,6 +3008,8 @@ export default function App() {
   useEffect(() => {
     if (mobileMode !== 'nav' || !navigator.geolocation) {
       navTelemetryRef.current = { lastCoords: null, rawCoords: null, filteredCoords: null, displayCoords: null, coveredMeters: 0, heading: 0, startedAt: null, averageSpeedKmh: 0 };
+      navCameraRef.current = { lastEaseAt: 0, lastCenter: null };
+      navRouteMetaUiRef.current = { lastUpdatedAt: 0, key: '' };
       setNavTelemetry({ speedKmh: 0, coveredKm: 0, heading: 0, accuracy: null });
       return undefined;
     }
@@ -2331,9 +3025,12 @@ export default function App() {
       averageSpeedKmh: 0
     };
     navProgressRef.current = { lastProgressMeters: 0, lastRemainingMeters: null, arrived: false };
+    navEtaRef.current = { minutes: null, lastUpdatedAt: 0 };
     navRerouteRef.current = { lastRerouteAt: Date.now(), offRouteHits: 0, currentStepIndex: 0 };
+    navCameraRef.current = { lastEaseAt: 0, lastCenter: null };
+    navRouteMetaUiRef.current = { lastUpdatedAt: 0, key: '' };
     const watchId = navigator.geolocation.watchPosition(
-      (position) => {
+      async (position) => {
         const rawCoords = [position.coords.latitude, position.coords.longitude];
         const speedKmh = Math.max(0, ((position.coords.speed || 0) * 3.6));
         const previousRaw = navTelemetryRef.current.rawCoords;
@@ -2346,21 +3043,16 @@ export default function App() {
           ? previousFiltered || rawCoords
           : blendCoordinates(previousFiltered, rawCoords, filterRatio);
         const routeProgress = getRouteProgress(filteredCoords, routeLineCoordinatesRef.current);
+        const snapThreshold = Math.max(NAV_SNAP_TO_ROUTE_METERS, Math.min(180, (accuracy || 0) * 1.8));
         const shouldSnapToRoad = routeProgress.nearestPoint
-          && Number.isFinite(routeProgress.distanceToRoute)
-          && routeProgress.distanceToRoute <= 1400;
+          && Number.isFinite(routeProgress.distanceToRoute);
         const heading = Number.isFinite(position.coords.heading)
           ? position.coords.heading
           : previousFiltered
             ? getBearingDegrees(previousFiltered, filteredCoords)
             : navTelemetryRef.current.heading;
         const predictedMeters = speedKmh > 5 ? Math.min(14, (speedKmh / 3.6) * 0.65) : 0;
-        const lockToRouteStart = routeLineCoordinatesRef.current.length >= 2
-          && navTelemetryRef.current.coveredMeters < 20
-          && speedKmh < 4;
-        const routeDisplayPoint = lockToRouteStart
-          ? getRoutePointAtProgress(routeLineCoordinatesRef.current, 0)
-          : shouldSnapToRoad
+        const routeDisplayPoint = shouldSnapToRoad
           ? getRoutePointAtProgress(routeLineCoordinatesRef.current, routeProgress.progressMeters + predictedMeters)
           : null;
         const displayCoords = routeDisplayPoint?.point || projectCoordinate(filteredCoords, heading, predictedMeters);
@@ -2399,20 +3091,40 @@ export default function App() {
           heading: displayHeading,
           accuracy
         });
-        renderUserLocationMarker(displayCoords, { label: 'Current location', heading: displayHeading, variant: 'nav-live' });
-        if (!navProgressRef.current.arrived) {
-          renderRouteStartLeg(rawCoords, displayCoords);
-        } else {
-          clearRouteStartLeg();
+        if (!navigationPreviewStepRef.current) {
+          renderUserLocationMarker(displayCoords, { label: 'Current location', heading: displayHeading, variant: 'nav-live' });
         }
+        clearRouteStartLeg();
         if (leafletMapInstance.current) {
-          leafletMapInstance.current.easeTo({
-            center: toLngLat(displayCoords),
-            bearing: displayHeading,
-            zoom: Math.max(leafletMapInstance.current.getZoom(), 16),
-            offset: [0, 110],
-            duration: 650
-          });
+          const nowForCamera = Date.now();
+          const cameraDistance = navCameraRef.current.lastCenter
+            ? getDistanceMeters(navCameraRef.current.lastCenter, displayCoords)
+            : Number.POSITIVE_INFINITY;
+          const shouldEaseCamera = !navigationPreviewStepRef.current
+            && (
+              nowForCamera - navCameraRef.current.lastEaseAt > 1600
+              || cameraDistance > Math.max(12, speedKmh * 0.55)
+            );
+          if (shouldEaseCamera) {
+            navCameraRef.current = { lastEaseAt: nowForCamera, lastCenter: displayCoords };
+            leafletMapInstance.current.easeTo({
+              center: toLngLat(displayCoords),
+              bearing: displayHeading,
+              zoom: Math.max(leafletMapInstance.current.getZoom(), 16),
+              offset: [0, 110],
+              duration: 650
+            });
+            window.setTimeout(() => {
+              if (navigationPreviewStepRef.current) return;
+              const latestCoords = navTelemetryRef.current.displayCoords;
+              if (!latestCoords) return;
+              renderUserLocationMarker(latestCoords, {
+                label: 'Current location',
+                heading: navTelemetryRef.current.heading,
+                variant: 'nav-live'
+              });
+            }, 700);
+          }
         }
 
         const destination = lastRouteEndpointsRef.current?.end;
@@ -2426,14 +3138,23 @@ export default function App() {
               if (index === 0) return 0;
               return sum + getDistanceMeters(coordinates[index - 1], point);
             }, 0);
-          const progressMeters = Math.min(selectedRouteMeters, Math.max(navProgressRef.current.lastProgressMeters || 0, coveredMeters));
+          const onRouteProgress = Number.isFinite(routeProgress.progressMeters)
+            && Number.isFinite(routeProgress.distanceToRoute)
+            && routeProgress.distanceToRoute <= Math.max(NAV_OFF_ROUTE_METERS, snapThreshold);
+          const progressSourceMeters = onRouteProgress ? routeProgress.progressMeters : (navProgressRef.current.lastProgressMeters || 0);
+          const progressMeters = Math.min(selectedRouteMeters, Math.max(navProgressRef.current.lastProgressMeters || 0, progressSourceMeters));
           const rawRemainingMeters = selectedRouteMeters > 0
-            ? Math.max(0, selectedRouteMeters - progressMeters)
+            ? (onRouteProgress ? Math.max(0, selectedRouteMeters - progressMeters) : previousRemaining ?? selectedRouteMeters)
             : crowDistanceToDestination;
           const remainingMeters = previousRemaining === null
             ? rawRemainingMeters
-            : Math.min(previousRemaining, rawRemainingMeters + 8);
-          const arrived = crowDistanceToDestination <= 28 || remainingMeters <= 25;
+            : (onRouteProgress ? Math.min(previousRemaining, rawRemainingMeters + 8) : previousRemaining);
+          const arrived = crowDistanceToDestination <= NAV_ARRIVAL_METERS
+            || (
+              crowDistanceToDestination <= 60
+              && remainingMeters <= 90
+              && routeProgress.distanceToRoute <= Math.max(NAV_OFF_ROUTE_METERS, snapThreshold)
+            );
           const justArrived = arrived && !navProgressRef.current.arrived;
           navProgressRef.current = {
             lastProgressMeters: progressMeters,
@@ -2447,14 +3168,68 @@ export default function App() {
             arrivalUnlockTimerRef.current = window.setTimeout(unlockNavigationAfterArrival, 3500);
           }
           const remainingKm = (navProgressRef.current.arrived ? 0 : navProgressRef.current.lastRemainingMeters) / 1000;
-          const liveSpeed = liveAverageSpeedKmh > 4
-            ? Math.max(4, Math.min(liveAverageSpeedKmh, selectedMode.speedFallbackKmh * 1.8))
-            : speedKmh > 6
-            ? speedKmh
-            : selectedMode.speedFallbackKmh;
-          const remainingMinutes = navProgressRef.current.arrived ? 0 : Math.max(1, Math.round((remainingKm / liveSpeed) * 60));
+          const fallbackSpeed = selectedMode.speedFallbackKmh;
+          const reliableCurrentSpeed = speedKmh > Math.max(5, fallbackSpeed * 0.35) ? speedKmh : null;
+          const reliableAverageSpeed = liveAverageSpeedKmh > Math.max(5, fallbackSpeed * 0.35) ? liveAverageSpeedKmh : null;
+          const rawEtaSpeed = reliableAverageSpeed
+            ? (reliableCurrentSpeed ? reliableAverageSpeed * 0.65 + reliableCurrentSpeed * 0.35 : reliableAverageSpeed)
+            : (reliableCurrentSpeed ? fallbackSpeed * 0.55 + reliableCurrentSpeed * 0.45 : fallbackSpeed);
+          const etaSpeed = Math.max(fallbackSpeed * 0.55, Math.min(rawEtaSpeed, fallbackSpeed * 1.75));
+          const estimatedRemainingMinutes = navProgressRef.current.arrived ? 0 : Math.max(1, Math.round((remainingKm / etaSpeed) * 60));
+          const previousEtaMinutes = navEtaRef.current.minutes;
+          const nowForEta = Date.now();
+          const shouldRefreshEta = navProgressRef.current.arrived
+            || previousEtaMinutes === null
+            || Math.abs(estimatedRemainingMinutes - previousEtaMinutes) >= NAV_ETA_SIGNIFICANT_CHANGE_MIN
+            || nowForEta - navEtaRef.current.lastUpdatedAt >= NAV_ETA_UPDATE_MIN_MS;
+          const remainingMinutes = shouldRefreshEta ? estimatedRemainingMinutes : previousEtaMinutes;
+          if (shouldRefreshEta) {
+            navEtaRef.current = { minutes: estimatedRemainingMinutes, lastUpdatedAt: nowForEta };
+          }
           const fuelLiters = selectedMode.fuelKmPerLiter ? (navProgressRef.current.arrived ? 0 : Math.max(0.1, remainingKm / selectedMode.fuelKmPerLiter)) : 0;
-          navRerouteRef.current.offRouteHits = 0;
+          const offRouteThreshold = Math.max(NAV_OFF_ROUTE_METERS, snapThreshold);
+          const isOffRoute = !navProgressRef.current.arrived
+            && routeLineCoordinatesRef.current.length > 1
+            && Number.isFinite(routeProgress.distanceToRoute)
+            && routeProgress.distanceToRoute > offRouteThreshold;
+
+          if (isOffRoute) {
+            navRerouteRef.current.offRouteHits += 1;
+            const now = Date.now();
+            const canReroute = navRerouteRef.current.offRouteHits >= 2
+              && now - navRerouteRef.current.lastRerouteAt > NAV_REROUTE_COOLDOWN_MS;
+
+            setRouteMeta((current) => current ? ({
+              ...current,
+              instruction: 'Rerouting from your current location',
+              offRouteDistance: Math.round(routeProgress.distanceToRoute)
+            }) : current);
+
+            if (canReroute) {
+              navRerouteRef.current = {
+                ...navRerouteRef.current,
+                lastRerouteAt: now,
+                offRouteHits: 0
+              };
+              const liveStart = {
+                name: 'Your Location',
+                coords: rawCoords,
+                address: `${rawCoords[0].toFixed(5)}, ${rawCoords[1].toFixed(5)}`,
+                temp: '--',
+                traffic: accuracy ? `Live GPS reroute, accuracy ${Math.round(accuracy)} m` : 'Live GPS reroute',
+                type: 'gps'
+              };
+              setLastUserLocation(liveStart);
+              setRouteFromQuery(liveStart.name);
+              triggerToast('Rerouting', 'Updating route from your current location.', false);
+              await drawRouteBetween(rawCoords, destination, lastRouteEndpointsRef.current?.label || 'destination', travelMode, liveStart.name, lastRouteEndpointsRef.current?.waypoint || null);
+              setMobileMode('nav');
+              setMobileSheetOpen(false);
+              return;
+            }
+          } else {
+            navRerouteRef.current.offRouteHits = 0;
+          }
 
           setRouteMeta((current) => {
             if (!current) return current;
@@ -2482,7 +3257,7 @@ export default function App() {
               ? formatLiveStepInstruction(nextStep, stepDistance)
               : 'Go straight';
 
-            return {
+            const nextMeta = {
               ...current,
               distance: `${remainingKm.toFixed(1)} km`,
               duration: hasArrived ? 'Arrived' : `${remainingMinutes} min`,
@@ -2491,6 +3266,22 @@ export default function App() {
               nextInstruction: nextStep?.name || current.routeTo || current.nextInstruction,
               offRouteDistance: null
             };
+            const uiKey = [
+              nextMeta.distance,
+              nextMeta.duration,
+              nextMeta.instruction,
+              nextMeta.nextInstruction,
+              nextMeta.offRouteDistance || ''
+            ].join('|');
+            const nowForUi = Date.now();
+            if (
+              uiKey === navRouteMetaUiRef.current.key
+              && nowForUi - navRouteMetaUiRef.current.lastUpdatedAt < 1200
+            ) {
+              return current;
+            }
+            navRouteMetaUiRef.current = { key: uiKey, lastUpdatedAt: nowForUi };
+            return nextMeta;
           });
         }
       },
@@ -2551,8 +3342,9 @@ export default function App() {
     if (normalizeSearchText(query) === 'my gps location') return null;
 
     const bestLocal = searchablePlaces
-      .map((place) => {
-        const text = `${place.name} ${place.address} ${SEARCH_ALIASES[place.key] || ''}`;
+      .map((item) => {
+        const place = item.place;
+        const text = `${place.name} ${place.address} ${searchAliases[item.key] || ''}`;
         return { place, score: getSearchScore(query, text) };
       })
       .filter((item) => item.score > 0 || fuzzySearch(query, `${item.place.name} ${item.place.address}`))
@@ -2575,9 +3367,14 @@ export default function App() {
     const map = leafletMapInstance.current;
     if (!map || !leafletLoaded) return null;
 
+    if (arrivalUnlockTimerRef.current) {
+      window.clearTimeout(arrivalUnlockTimerRef.current);
+      arrivalUnlockTimerRef.current = null;
+    }
     clearRouteLine();
     lastRouteEndpointsRef.current = { start, end, label, startLabel, waypoint };
     navProgressRef.current = { lastProgressMeters: 0, lastRemainingMeters: null, arrived: false };
+    navEtaRef.current = { minutes: null, lastUpdatedAt: 0 };
     const selectedMode = TRAVEL_MODES.find((mode) => mode.id === modeId) || TRAVEL_MODES[0];
     const routeSummary = waypoint
       ? `${startLabel} to ${label} via ${waypoint.name}`
@@ -2734,7 +3531,7 @@ export default function App() {
           distance: step.distance || 0,
           coords: step.maneuver?.location ? [step.maneuver.location[1], step.maneuver.location[0]] : null,
           name: step.name || ''
-        })).slice(0, 12),
+        })),
         constructionHits
       });
       routeInteractionLockedRef.current = true;
@@ -2785,10 +3582,78 @@ export default function App() {
     }
   };
 
-  const handleSelectRouteAlternative = (alternative) => {
+  const handleSelectRouteAlternative = async (alternative) => {
     if (!alternative?.coordinates?.length) return;
     playClickSound();
+    const liveStart = navTelemetryRef.current.rawCoords || navTelemetryRef.current.filteredCoords || lastUserLocation?.coords;
+    const activeDestination = lastRouteEndpointsRef.current?.end;
+    if (mobileMode === 'nav' && liveStart && activeDestination) {
+      const selectedMode = TRAVEL_MODES.find((mode) => mode.id === travelMode) || TRAVEL_MODES[0];
+      const liveProgress = getRouteProgress(liveStart, alternative.coordinates);
+      const remainingAlternativeCoordinates = alternative.coordinates.slice(Math.max(0, liveProgress.segmentIndex + 1));
+      const liveRouteCoordinates = [
+        liveStart,
+        ...(liveProgress.nearestPoint && getDistanceMeters(liveStart, liveProgress.nearestPoint) > 8 ? [liveProgress.nearestPoint] : []),
+        ...remainingAlternativeCoordinates
+      ];
+      const routeCoordinates = liveRouteCoordinates.length > 1 ? liveRouteCoordinates : [liveStart, activeDestination];
+      const routeDistanceMeters = getRouteLengthMeters(routeCoordinates);
+      const distanceKm = routeDistanceMeters / 1000;
+      const durationMinutes = getEstimatedRouteMinutes(distanceKm, selectedMode);
+      const fuelLiters = selectedMode.fuelKmPerLiter ? Math.max(0.1, distanceKm / selectedMode.fuelKmPerLiter) : 0;
+      const constructionHits = getConstructionHitsForRoute(routeCoordinates);
+      const firstActionStep = alternative.steps.find((step) => step.maneuver?.type !== 'depart') || alternative.steps[0];
+
+      routeLineCoordinatesRef.current = routeCoordinates;
+      navProgressRef.current = { lastProgressMeters: 0, lastRemainingMeters: null, arrived: false };
+      navEtaRef.current = { minutes: null, lastUpdatedAt: 0 };
+      navRerouteRef.current = { lastRerouteAt: Date.now(), offRouteHits: 0, currentStepIndex: 0 };
+      lastRouteEndpointsRef.current = {
+        ...(lastRouteEndpointsRef.current || {}),
+        start: liveStart,
+        end: activeDestination,
+        startLabel: 'Your Location',
+        label: lastRouteEndpointsRef.current?.label || latestRouteMetaRef.current?.routeTo || 'destination'
+      };
+      setSelectedRouteId(alternative.id);
+      setRouteFromQuery('Your Location');
+      renderAlternativeRoutes(routeAlternatives.filter((route) => route.id !== alternative.id));
+      renderRouteLine(routeCoordinates);
+      renderRouteEndpointMarkers(routeCoordinates[0] || liveStart, activeDestination, 'Your Location', lastRouteEndpointsRef.current?.label || latestRouteMetaRef.current?.routeTo || 'destination');
+      renderRouteLastLeg(routeCoordinates.at(-1) || activeDestination, activeDestination);
+      setRouteMeta((current) => ({
+        ...current,
+        distance: `${distanceKm.toFixed(1)} km`,
+        duration: `${durationMinutes} min`,
+        fuel: `${fuelLiters.toFixed(1)} L`,
+        routeDistanceMeters,
+        routeFrom: 'Your Location',
+        source: selectedMode.label,
+        estimateLabel: alternative.label,
+        instruction: formatRouteInstruction(firstActionStep),
+        nextInstruction: firstActionStep?.name || current?.routeTo || 'destination',
+        steps: alternative.steps.map((step) => ({
+          instruction: formatRouteInstruction(step),
+          distance: step.distance || 0,
+          coords: step.maneuver?.location ? [step.maneuver.location[1], step.maneuver.location[0]] : null,
+          name: step.name || ''
+        })),
+        constructionHits
+      }));
+      setRouteAlternatives((current) => [
+        alternative,
+        ...current.filter((route) => route.id !== alternative.id)
+      ]);
+      triggerToast('Route Changed', `${alternative.label} selected from your current location.`, false);
+      setMobileMode('nav');
+      setMobileSheetOpen(false);
+      return;
+    }
+
     routeLineCoordinatesRef.current = alternative.coordinates;
+    navProgressRef.current = { lastProgressMeters: 0, lastRemainingMeters: null, arrived: false };
+    navEtaRef.current = { minutes: null, lastUpdatedAt: 0 };
+    navRerouteRef.current = { lastRerouteAt: Date.now(), offRouteHits: 0, currentStepIndex: 0 };
     setSelectedRouteId(alternative.id);
     renderAlternativeRoutes(routeAlternatives.filter((route) => route.id !== alternative.id));
     renderRouteLine(alternative.coordinates);
@@ -2817,7 +3682,7 @@ export default function App() {
         distance: step.distance || 0,
         coords: step.maneuver?.location ? [step.maneuver.location[1], step.maneuver.location[0]] : null,
         name: step.name || ''
-      })).slice(0, 12),
+      })),
       constructionHits
     }));
     setRouteAlternatives((current) => [
@@ -2906,6 +3771,7 @@ export default function App() {
     playClickSound();
     navigationNotificationShownRef.current = false;
     navigationNotificationLastMetaRef.current = '';
+    navigationNotificationLastUpdateAtRef.current = 0;
     if (arrivalUnlockTimerRef.current) {
       window.clearTimeout(arrivalUnlockTimerRef.current);
       arrivalUnlockTimerRef.current = null;
@@ -2916,6 +3782,7 @@ export default function App() {
     routeInteractionLockedRef.current = false;
     navRerouteRef.current = { lastRerouteAt: 0, offRouteHits: 0, currentStepIndex: 0 };
     navProgressRef.current = { lastProgressMeters: 0, lastRemainingMeters: null, arrived: false };
+    navEtaRef.current = { minutes: null, lastUpdatedAt: 0 };
     clearRouteLine();
     clearMapLibreLayer('route-alternatives');
     alternativeRouteMarkersGroup.current.forEach((marker) => marker.remove());
@@ -2925,6 +3792,7 @@ export default function App() {
       userLayerGroup.current.forEach((marker) => marker.remove());
       userLayerGroup.current = [];
     }
+    clearNavigationArrowLayer();
     setRouteActive(false);
     setRouteMeta(null);
     setRouteAlternatives([]);
@@ -3018,6 +3886,7 @@ export default function App() {
     if (!routeSearchTarget || !place) return;
 
     playClickSound();
+    rememberSearch(place.name, place);
     setSearchQuery('');
     setMobileMode('route');
     setMobileSheetOpen(true);
@@ -3129,9 +3998,47 @@ export default function App() {
     const existingRoute = lastRouteEndpointsRef.current;
     const hasRenderableRoute = routeActive && routeMeta && routeLineCoordinatesRef.current.length > 1;
     if (hasRenderableRoute && existingRoute?.label && isRouteDestinationText(existingRoute.label)) {
-      const liveStart = isPreciseGpsLocation(lastUserLocation) ? lastUserLocation : null;
+      let liveStart = isPreciseGpsLocation(lastUserLocation) ? lastUserLocation : null;
+      const shouldUseGpsStart = routeStartKey === 'gps' || isGpsStartText(routeFromQuery);
+
+      if (shouldUseGpsStart && navigator.geolocation) {
+        try {
+          const position = await getGpsPosition();
+          const coords = [position.coords.latitude, position.coords.longitude];
+          liveStart = {
+            name: 'Your Location',
+            coords,
+            address: `${coords[0].toFixed(5)}, ${coords[1].toFixed(5)}`,
+            temp: '--',
+            traffic: position.coords.accuracy ? `Current GPS position selected, accuracy ${Math.round(position.coords.accuracy)} m` : 'Current GPS position selected',
+            type: 'gps'
+          };
+          setLastUserLocation(liveStart);
+        } catch {
+          liveStart = isPreciseGpsLocation(lastUserLocation) ? lastUserLocation : null;
+        }
+      }
+
       if (liveStart) {
         renderUserLocationMarker(liveStart.coords, { label: liveStart.name || 'Current location', heading: navTelemetryRef.current.heading, variant: 'nav-live' });
+      }
+
+      if (shouldUseGpsStart && liveStart) {
+        setRouteFromQuery(liveStart.name);
+        setRouteToQuery(existingRoute.label);
+        setSearchQuery('');
+        setLayersMenuOpen(false);
+        setMobileNavMenuOpen(false);
+        setMobileRecenterExpanded(false);
+        const routeReady = await drawRouteBetween(liveStart.coords, existingRoute.end, existingRoute.label, travelMode, liveStart.name, existingRoute.waypoint || null);
+        if (routeReady) {
+          setMobileMode('nav');
+          setMobileSheetOpen(false);
+        } else {
+          setMobileMode('route');
+          setMobileSheetOpen(true);
+        }
+        return;
       }
 
       const fallbackDistanceKm = getDistanceMeters(existingRoute.start, existingRoute.end) / 1000;
@@ -3248,6 +4155,7 @@ export default function App() {
     clearNavigationNotification();
     navigationNotificationShownRef.current = false;
     navigationNotificationLastMetaRef.current = '';
+    navigationNotificationLastUpdateAtRef.current = 0;
   };
 
   useEffect(() => {
@@ -3262,6 +4170,9 @@ export default function App() {
 
   useEffect(() => {
     window.__SPIDER_NAV_ACTIVE__ = mobileMode === 'nav' && routeActive;
+    if (isNativeCapacitorApp() && window.SpiderMapsNative?.setNavigationActive) {
+      window.SpiderMapsNative.setNavigationActive(window.__SPIDER_NAV_ACTIVE__);
+    }
     document.body.classList.toggle('spider-navigation-active', window.__SPIDER_NAV_ACTIVE__);
     if (!window.__SPIDER_NAV_ACTIVE__) {
       document.body.classList.remove('spider-pip-mode');
@@ -3271,6 +4182,9 @@ export default function App() {
 
     return () => {
       window.__SPIDER_NAV_ACTIVE__ = false;
+      if (isNativeCapacitorApp() && window.SpiderMapsNative?.setNavigationActive) {
+        window.SpiderMapsNative.setNavigationActive(false);
+      }
       document.body.classList.remove('spider-navigation-active');
       document.body.classList.remove('spider-pip-mode');
       document.body.style.removeProperty('--spider-pip-map-width');
@@ -3280,10 +4194,22 @@ export default function App() {
 
   useEffect(() => {
     const getPipMapSize = () => {
-      const viewportWidth = Math.round(window.visualViewport?.width || window.innerWidth || 360);
-      const viewportHeight = Math.round(window.visualViewport?.height || window.innerHeight || 480);
-      const width = Math.max(240, viewportWidth);
-      const height = Math.max(320, viewportHeight);
+      const surfaceRect = mapRef.current?.getBoundingClientRect?.();
+      const bodyRect = document.body.getBoundingClientRect();
+      const width = Math.round(
+        window.visualViewport?.width
+        || window.innerWidth
+        || surfaceRect?.width
+        || bodyRect.width
+        || 1
+      );
+      const height = Math.round(
+        window.visualViewport?.height
+        || window.innerHeight
+        || surfaceRect?.height
+        || bodyRect.height
+        || 1
+      );
       return { width, height };
     };
 
@@ -3294,6 +4220,7 @@ export default function App() {
       if (!map || !container || !surface) return { width: 0, height: 0 };
 
       const { width, height } = getPipMapSize();
+      if (width <= 1 || height <= 1) return { width, height };
       document.body.style.setProperty('--spider-pip-map-width', `${width}px`);
       document.body.style.setProperty('--spider-pip-map-height', `${height}px`);
 
@@ -3303,11 +4230,19 @@ export default function App() {
       });
 
       const canvas = map.getCanvas();
-      const pixelRatio = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
       canvas.style.width = `${width}px`;
       canvas.style.height = `${height}px`;
-      canvas.width = Math.round(width * pixelRatio);
-      canvas.height = Math.round(height * pixelRatio);
+      const pixelRatio = Math.max(1, Math.min(window.devicePixelRatio || 1, 2));
+      const backingWidth = Math.max(1, Math.round(width * pixelRatio));
+      const backingHeight = Math.max(1, Math.round(height * pixelRatio));
+      try {
+        if (!map.painter?.context?.gl?.isContextLost?.()) {
+          if (canvas.width !== backingWidth) canvas.width = backingWidth;
+          if (canvas.height !== backingHeight) canvas.height = backingHeight;
+        }
+      } catch (error) {
+        console.warn('SpiderMaps PIP canvas backing resize skipped', error);
+      }
 
       return { width, height };
     };
@@ -3316,13 +4251,17 @@ export default function App() {
       const map = leafletMapInstance.current;
       const container = map?.getContainer?.();
       const surface = mapRef.current;
+      const frame = surface?.closest?.('.spider-map-frame');
 
       document.body.style.removeProperty('--spider-pip-map-width');
       document.body.style.removeProperty('--spider-pip-map-height');
-      [surface, container, map?.getCanvas?.()].forEach((element) => {
+      [frame, surface, container, map?.getCanvas?.()].forEach((element) => {
         if (!element) return;
         element.style.width = '';
         element.style.height = '';
+        element.style.maxWidth = '';
+        element.style.maxHeight = '';
+        element.style.transform = '';
       });
     };
 
@@ -3339,8 +4278,10 @@ export default function App() {
       const resizeAndFocus = () => {
         if (isPipMode) {
           forcePipMapSize();
+          map.repaint = true;
         } else {
           releasePipMapSize();
+          map.repaint = false;
         }
         map.resize();
         if (isPipMode && liveCoords) {
@@ -3357,16 +4298,20 @@ export default function App() {
             duration: 0
           });
         }
+        map.triggerRepaint?.();
       };
 
       resizeAndFocus();
       window.requestAnimationFrame(resizeAndFocus);
-      window.setTimeout(resizeAndFocus, 180);
-      window.setTimeout(resizeAndFocus, 520);
+      if (!isPipMode) {
+        window.setTimeout(resizeAndFocus, 80);
+        window.setTimeout(resizeAndFocus, 220);
+      }
     };
 
     window.__SPIDER_SYNC_PIP_MAP__ = syncPipMap;
     window.addEventListener('resize', syncPipMap);
+    window.visualViewport?.addEventListener?.('resize', syncPipMap);
     window.addEventListener('spider:pip-mode-change', syncPipMap);
 
     return () => {
@@ -3374,6 +4319,7 @@ export default function App() {
         delete window.__SPIDER_SYNC_PIP_MAP__;
       }
       window.removeEventListener('resize', syncPipMap);
+      window.visualViewport?.removeEventListener?.('resize', syncPipMap);
       window.removeEventListener('spider:pip-mode-change', syncPipMap);
     };
   }, [activeLocation.coords, lastUserLocation?.coords]);
@@ -3406,26 +4352,101 @@ export default function App() {
 
   useEffect(() => {
     if (mobileMode === 'nav' && routeMeta) {
-      const notificationKey = [
-        routeMeta.duration,
-        routeMeta.distance,
-        routeMeta.instruction,
-        routeMeta.routeTo
-      ].join('|');
-      if (notificationKey !== navigationNotificationLastMetaRef.current) {
+      const instruction = routeMeta.instruction || '';
+      const hasArrived = /arrived/i.test(routeMeta.duration || '') || /arrived/i.test(instruction);
+      const now = Date.now();
+      const notificationKey = hasArrived
+        ? `${routeMeta.routeTo || activeLocation?.name || 'destination'}|arrived`
+        : `${routeMeta.routeTo || activeLocation?.name || 'destination'}|started`;
+      const shouldUpdateNotification = !navigationNotificationShownRef.current || (
+        hasArrived && notificationKey !== navigationNotificationLastMetaRef.current
+      );
+
+      if (shouldUpdateNotification) {
         navigationNotificationShownRef.current = true;
         navigationNotificationLastMetaRef.current = notificationKey;
+        navigationNotificationLastUpdateAtRef.current = now;
         showNavigationNotification(routeMeta, activeLocation);
       }
     }
     if (mobileMode !== 'nav') {
       navigationNotificationShownRef.current = false;
       navigationNotificationLastMetaRef.current = '';
+      navigationNotificationLastUpdateAtRef.current = 0;
     }
   }, [mobileMode, routeMeta, activeLocation]);
 
+  useEffect(() => {
+    if (mobileMode !== 'nav' || !routeMeta || !soundEnabled) {
+      navigationVoiceRef.current = {
+        ...navigationVoiceRef.current,
+        key: '',
+        started: false,
+        arrived: false,
+        stepKey: '',
+        buckets: new Set()
+      };
+      return;
+    }
+
+    const instruction = routeMeta.instruction || '';
+    const maneuver = getNavigationVoiceManeuver(instruction);
+    const hasArrived = maneuver === 'arrived' || /arrived/i.test(routeMeta.duration || '');
+
+    if (!navigationVoiceRef.current.started) {
+      navigationVoiceRef.current.started = true;
+      navigationVoiceRef.current.key = 'nav_started';
+      navigationVoiceRef.current.stepKey = '';
+      navigationVoiceRef.current.buckets = new Set();
+      playNavigationVoiceSequence(['nav_started']);
+      return;
+    }
+
+    if (hasArrived) {
+      if (!navigationVoiceRef.current.arrived) {
+        navigationVoiceRef.current.arrived = true;
+        navigationVoiceRef.current.key = 'arrived';
+        playNavigationVoiceSequence(['arrived']);
+      }
+      return;
+    }
+
+    if (maneuver === 'rerouting') {
+      if (navigationVoiceRef.current.key !== 'rerouting') {
+        navigationVoiceRef.current.key = 'rerouting';
+        playNavigationVoiceSequence(['rerouting']);
+      }
+      return;
+    }
+
+    if (!maneuver) return;
+
+    const distanceMeters = getNavigationVoiceDistanceMeters(instruction);
+    const distanceClip = getNavigationVoiceDistanceClip(distanceMeters);
+    const distanceBucket = getNavigationVoiceDistanceBucket(distanceMeters);
+    const stepKey = [
+      maneuver,
+      routeMeta.nextInstruction || routeMeta.routeTo || '',
+      String(instruction || '').replace(/\b(?:in|for)\s+\d+(?:\.\d+)?\s*(?:m|meter|meters|km|kilometer|kilometers)\b/i, '').trim()
+    ].join('|');
+    if (stepKey !== navigationVoiceRef.current.stepKey) {
+      navigationVoiceRef.current.stepKey = stepKey;
+      navigationVoiceRef.current.buckets = new Set();
+    }
+    if (navigationVoiceRef.current.buckets.has(distanceBucket)) return;
+
+    const voiceKey = `${stepKey}:${distanceBucket}`;
+    if (voiceKey === navigationVoiceRef.current.key) return;
+
+    navigationVoiceRef.current.buckets.add(distanceBucket);
+    navigationVoiceRef.current.key = voiceKey;
+    playNavigationVoiceSequence(distanceClip ? [maneuver, distanceClip] : [maneuver]);
+  }, [mobileMode, routeMeta?.instruction, routeMeta?.duration, routeMeta?.nextInstruction, routeMeta?.routeTo, soundEnabled]);
+
   const handleMobileNavRecenter = () => {
     playClickSound();
+    navigationPreviewStepRef.current = null;
+    setRoutePreviewStyle(false);
     if (mobileRecenterExpanded) {
       setMobileRecenterExpanded(false);
       return;
@@ -3454,6 +4475,63 @@ export default function App() {
           triggerToast("GPS Failed", getGpsErrorMessage(error), true);
         });
     }, 0);
+  };
+
+  const handleNavigationPreviewStepChange = (stepIndex, step) => {
+    if (!stepIndex || !step) {
+      navigationPreviewStepRef.current = null;
+      setRoutePreviewStyle(false);
+      const liveCoords = navTelemetryRef.current.displayCoords
+        || navTelemetryRef.current.filteredCoords
+        || navTelemetryRef.current.rawCoords
+        || lastUserLocation?.coords;
+      if (liveCoords) {
+        renderUserLocationMarker(liveCoords, {
+          label: 'Current location',
+          heading: navTelemetryRef.current.heading,
+          variant: 'nav-live'
+        });
+      }
+      return;
+    }
+
+    const routeCoordinates = routeLineCoordinatesRef.current;
+    const fallbackRoutePoint = routeCoordinates?.[Math.min(routeCoordinates.length - 1, stepIndex)] || routeCoordinates?.[0];
+    const routeProgress = getRouteProgress(step.coords || fallbackRoutePoint, routeCoordinates);
+    const routeLengthMeters = routeProgress.routeLengthMeters || latestRouteMetaRef.current?.routeDistanceMeters || 0;
+    const isFinalPreviewStep = /arriv|destination/i.test(step.instruction || '')
+      || stepIndex >= Math.max(1, latestRouteMetaRef.current?.steps?.length || 1) - 1;
+    const targetProgressMeters = isFinalPreviewStep && Number.isFinite(routeLengthMeters)
+      ? Math.max(0, routeLengthMeters - 4)
+      : Math.max(0, routeProgress.progressMeters || 0);
+    const routePoint = getRoutePointAtProgress(routeCoordinates, targetProgressMeters);
+    const previewCoords = routePoint?.point || routeProgress.nearestPoint || step.coords;
+    const previewHeading = Number.isFinite(routePoint?.heading)
+      ? routePoint.heading
+      : (Number.isFinite(routeProgress.routeHeading) ? routeProgress.routeHeading : navTelemetryRef.current.heading);
+
+    navigationPreviewStepRef.current = { stepIndex, coords: previewCoords };
+    setRoutePreviewStyle(true);
+    renderUserLocationMarker(previewCoords, {
+      label: step.instruction || `Step ${stepIndex + 1}`,
+      heading: previewHeading,
+      variant: 'nav-live nav-preview'
+    });
+    leafletMapInstance.current?.easeTo({
+      center: toLngLat(previewCoords),
+      bearing: previewHeading,
+      zoom: Math.max(leafletMapInstance.current.getZoom(), 16),
+      offset: [0, 0],
+      duration: 450
+    });
+    window.setTimeout(() => {
+      if (navigationPreviewStepRef.current?.stepIndex !== stepIndex) return;
+      renderUserLocationMarker(previewCoords, {
+        label: step.instruction || `Step ${stepIndex + 1}`,
+        heading: previewHeading,
+        variant: 'nav-live nav-preview'
+      });
+    }, 500);
   };
 
   const handleMobileRouteMenuToggle = () => {
@@ -3500,14 +4578,45 @@ export default function App() {
     setMobileSettingsPage(page);
   };
 
-  const handleMobileLogin = (provider) => {
+  const handleMobileLogin = async () => {
     playClickSound();
-    triggerToast("Login", `${provider} login will be connected when auth is enabled.`, false);
+    setAuthBusy(true);
+    try {
+      const result = isNativeCapacitorApp()
+        ? await signInWithNativeGoogle()
+        : await signInWithPopup(firebaseAuth, googleAuthProvider);
+      triggerToast("Google Login", `Signed in as ${result.user.displayName || result.user.email || 'Google user'}.`, false);
+      setMobileSettingsPage('home');
+      return { ok: true };
+    } catch (error) {
+      console.error('Google login failed', error);
+      if (isGoogleAuthCancel(error)) {
+        return { ok: false, cancelled: true };
+      }
+      const code = error?.code || '';
+      if (!isNativeCapacitorApp() && ['auth/popup-blocked', 'auth/popup-closed-by-user', 'auth/cancelled-popup-request'].includes(code)) {
+        triggerToast("Google Login", "Please allow popups to continue with Google.", true);
+      } else {
+        triggerToast("Google Login", error?.message || 'Google login failed.', true);
+      }
+    } finally {
+      setAuthBusy(false);
+    }
+    return { ok: false };
   };
 
-  const handleMobileLogout = () => {
+  const handleMobileLogout = async () => {
     playClickSound();
-    triggerToast("Logout", "Signed out from this Spider Maps session.", false);
+    try {
+      if (isNativeCapacitorApp()) {
+        await FirebaseAuthentication.signOut();
+      }
+      await signOut(firebaseAuth);
+      triggerToast("Logout", "Signed out from Spider Maps.", false);
+    } catch (error) {
+      console.error('Logout failed', error);
+      triggerToast("Logout", error?.message || 'Logout failed.', true);
+    }
   };
 
   const handleSpeedUnitChange = (unit) => {
@@ -3626,11 +4735,15 @@ export default function App() {
   };
   const handleSearchSubmit = (e) => {
     if (e) e.preventDefault();
-    if (!searchQuery.trim()) return;
+    const submittedQuery = searchQuery.trim();
+    if (!submittedQuery) return;
 
     playClickSound();
     const destination = createSearchDestination();
     if (routeSearchTarget) {
+      if (!destination?.coords) {
+        rememberSearch(submittedQuery);
+      }
       handleRouteSearchSelect(destination);
       return;
     }
@@ -3639,11 +4752,13 @@ export default function App() {
       return;
     }
     if (!destination?.coords) {
+      rememberSearch(submittedQuery);
       triggerToast("Place Not Found", "Select a suggestion or click the map to choose that location.", true);
       setMobileSheetOpen(true);
       clearSearchState();
       return;
     }
+    rememberSearch(submittedQuery, destination);
     if (leafletMapInstance.current) {
       leafletMapInstance.current.flyTo({ center: toLngLat(destination.coords), zoom: 14, duration: 1200 });
     }
@@ -3684,6 +4799,42 @@ export default function App() {
     }
   };
 
+  const playNavigationVoiceClip = async (clipName) => {
+    const formats = ['mp3', 'wav', 'ogg'];
+    for (const format of formats) {
+      const clipPath = `/nav-voice/${clipName}.${format}`;
+      try {
+        await new Promise((resolve, reject) => {
+          const audio = new Audio(clipPath);
+          audio.preload = 'auto';
+          audio.onended = resolve;
+          audio.onerror = reject;
+          audio.play().catch(reject);
+        });
+        return true;
+      } catch {
+        // Try the next extension.
+      }
+    }
+
+    if (!navigationVoiceRef.current.missing.has(clipName)) {
+      navigationVoiceRef.current.missing.add(clipName);
+      console.info(`SpiderMaps voice clip missing: ${clipName}`);
+    }
+    return false;
+  };
+
+  const playNavigationVoiceSequence = (clips = []) => {
+    if (!soundEnabled || !clips.length) return;
+    navigationVoiceRef.current.queue = navigationVoiceRef.current.queue
+      .catch(() => undefined)
+      .then(async () => {
+        for (const clip of clips) {
+          await playNavigationVoiceClip(clip);
+        }
+      });
+  };
+
   const toggleSound = () => {
     const nextState = !soundEnabled;
     setSoundEnabled(nextState);
@@ -3719,10 +4870,15 @@ export default function App() {
         }
       }
 
+      await Promise.allSettled([
+        LocalNotifications.deleteChannel({ id: 'spidermaps-navigation' }),
+        LocalNotifications.deleteChannel({ id: 'spidermaps-navigation-quiet' }),
+        LocalNotifications.deleteChannel({ id: 'spidermaps-navigation-quiet-v2' })
+      ]);
       await LocalNotifications.createChannel({
         id: NAVIGATION_NOTIFICATION_CHANNEL,
         name: 'SpiderMaps Navigation',
-        description: 'Live route progress and navigation controls',
+        description: 'Navigation start, arrival, and controls',
         importance: 4,
         visibility: 1,
         vibration: false,
@@ -3891,17 +5047,18 @@ export default function App() {
         const props = feature.properties || {};
         const name = getMapFeatureLabel(props);
         const coords = getFeatureCenter(feature);
-        if (!name || !coords || !doesMapFeatureMatchCategory(category, props)) return null;
-        const distanceMeters = getDistanceMeters(center, coords);
+        const validCoords = parsePlaceCoords(coords);
+        if (!name || !validCoords || !doesMapFeatureMatchCategory(category, props)) return null;
+        const distanceMeters = getDistanceMeters(center, validCoords);
         if (distanceMeters > maxDistance) return null;
         const type = props.amenity || props.shop || props.tourism || props.highway || props.railway || props.public_transport || props.class || props.subclass || category;
         return {
-          key: `map-${category}-${normalizeSearchText(name).replace(/\s+/g, '-')}-${coords.map((value) => value.toFixed(4)).join('-')}`,
+          key: `map-${category}-${normalizeSearchText(name).replace(/\s+/g, '-')}-${validCoords.map((value) => value.toFixed(4)).join('-')}`,
           source: 'map',
           score: 160 - (distanceMeters / 100),
           place: {
             name,
-            coords,
+            coords: validCoords,
             address: `${Math.max(0.1, distanceMeters / 1000).toFixed(1)} km from your location`,
             temp: '--',
             traffic: 'Read from loaded map data',
@@ -3911,7 +5068,9 @@ export default function App() {
       })
       .filter(Boolean)
       .filter((suggestion) => {
-        const key = `${normalizeSearchText(suggestion.place.name)}-${suggestion.place.coords.map((value) => value.toFixed(3)).join(',')}`;
+        const coords = parsePlaceCoords(suggestion?.place?.coords);
+        if (!coords) return false;
+        const key = `${normalizeSearchText(suggestion.place.name)}-${coords.map((value) => value.toFixed(3)).join(',')}`;
         if (seen.has(key)) return false;
         seen.add(key);
         return true;
@@ -3950,20 +5109,21 @@ export default function App() {
         const props = feature.properties || {};
         const name = getMapFeatureLabel(props);
         const coords = getFeatureCenter(feature);
-        if (!name || !coords) return null;
+        const validCoords = parsePlaceCoords(coords);
+        if (!name || !validCoords) return null;
         const type = props.amenity || props.shop || props.tourism || props.highway || props.railway || props.public_transport || props.class || props.subclass || 'map place';
         const text = `${name} ${type} ${props.brand || ''} ${props.operator || ''}`;
         const score = getSearchScore(cleanQuery, text);
         if (score < 34 && !fuzzySearch(cleanQuery, text)) return null;
-        const distanceMeters = getDistanceMeters(searchCenter, coords);
+        const distanceMeters = getDistanceMeters(searchCenter, validCoords);
         if (distanceMeters > 18000) return null;
         return {
-          key: `map-search-${normalizeSearchText(name).replace(/\s+/g, '-')}-${coords.map((value) => value.toFixed(4)).join('-')}`,
+          key: `map-search-${normalizeSearchText(name).replace(/\s+/g, '-')}-${validCoords.map((value) => value.toFixed(4)).join('-')}`,
           source: 'map',
           score: score + Math.max(0, 36 - distanceMeters / 500),
           place: {
             name,
-            coords,
+            coords: validCoords,
             address: `${Math.max(0.1, distanceMeters / 1000).toFixed(1)} km from map center`,
             temp: '--',
             traffic: 'Read from loaded map data',
@@ -3973,7 +5133,9 @@ export default function App() {
       })
       .filter(Boolean)
       .filter((suggestion) => {
-        const key = `${normalizeSearchText(suggestion.place.name)}-${suggestion.place.coords.map((value) => value.toFixed(3)).join(',')}`;
+        const coords = parsePlaceCoords(suggestion?.place?.coords);
+        if (!coords) return false;
+        const key = `${normalizeSearchText(suggestion.place.name)}-${coords.map((value) => value.toFixed(3)).join(',')}`;
         if (seen.has(key)) return false;
         seen.add(key);
         return true;
@@ -3986,6 +5148,7 @@ export default function App() {
     playClickSound();
     const query = CATEGORY_SEARCH_QUERIES[category] || `${category} Hyderabad`;
     let origin = lastUserLocation;
+    rememberSearch(query);
 
     if (!origin?.coords) {
       triggerToast("Getting Location", `Using GPS to find ${category} near you.`, false);
@@ -4042,6 +5205,83 @@ export default function App() {
       triggerToast("Place Saved", `${savedPlace.name} saved on this browser.`, false);
     } catch {
       triggerToast("Save Failed", "This browser could not save the place.", true);
+    }
+  };
+
+  const openPlaceRequest = () => {
+    playClickSound();
+    setPlaceRequestForm({
+      name: isRouteDestination(activeLocation) ? activeLocation.name : '',
+      address: isRouteDestination(activeLocation) ? activeLocation.address || '' : ''
+    });
+    setPlaceRequestImage(null);
+    setPlaceRequestOpen(true);
+  };
+
+  const uploadPlaceRequestImage = async (file) => {
+    if (!file) return '';
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('upload_preset', PLACE_REQUEST_CLOUDINARY_UPLOAD_PRESET);
+    formData.append('folder', PLACE_REQUEST_CLOUDINARY_FOLDER);
+
+    const response = await fetch(`https://api.cloudinary.com/v1_1/${PLACE_REQUEST_CLOUDINARY_CLOUD_NAME}/image/upload`, {
+      method: 'POST',
+      body: formData
+    });
+
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data?.error?.message || `Cloudinary upload failed: ${response.status}`);
+    }
+    return data.secure_url || data.url || '';
+  };
+
+  const handlePlaceRequestSubmit = async (event) => {
+    event.preventDefault();
+    const name = placeRequestForm.name.trim();
+    const address = placeRequestForm.address.trim();
+
+    if (!name) {
+      triggerToast("Missing Name", "Add the place name first.", true);
+      return;
+    }
+
+    if (!address) {
+      triggerToast("Missing Address", "Add the full address.", true);
+      return;
+    }
+
+    setPlaceRequestSubmitting(true);
+    try {
+      const imageUrl = placeRequestImage ? await uploadPlaceRequestImage(placeRequestImage) : '';
+      const response = await fetch(`${PLACE_REQUESTS_DB_URL}.json`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name,
+          address,
+          imageUrl,
+          imageName: placeRequestImage?.name || '',
+          status: 'pending',
+          source: 'spidermaps-app',
+          createdAt: Date.now(),
+          createdAtText: new Date().toLocaleString(),
+          appVersion: 'spidermaps-web'
+        })
+      });
+
+      if (!response.ok) throw new Error(`Request failed: ${response.status}`);
+
+      setPlaceRequestOpen(false);
+      setPlaceRequestForm({ name: '', address: '' });
+      setPlaceRequestImage(null);
+      triggerToast("Request Sent", imageUrl ? "Request and image URL sent for admin review." : "Your place request is waiting for admin review.", false);
+    } catch (error) {
+      console.error(error);
+      triggerToast("Request Failed", error?.message?.includes('upload preset') ? "Cloudinary unsigned upload preset is missing or invalid." : "Could not send this place request right now.", true);
+    } finally {
+      setPlaceRequestSubmitting(false);
     }
   };
 
@@ -4486,6 +5726,7 @@ const getGpsErrorMessage = (error) => {
                   type="button"
                   onClick={() => {
                     playClickSound();
+                    rememberSearch(suggestion.place.name, suggestion.place);
                     setSearchQuery(suggestion.place.name);
                     handleSelectLocation(suggestion.place);
                   }}
@@ -4529,7 +5770,7 @@ const getGpsErrorMessage = (error) => {
                   <div
                     key={place.id}
                     onClick={() => handleSelectLocation(place)}
-                    className="flex items-start gap-4 p-2.5 hover:bg-[#1c2541] rounded-xl cursor-pointer group transition-all"
+                    className="flex items-start gap-3 p-2.5 hover:bg-[#1c2541] rounded-xl cursor-pointer group transition-all"
                   >
                     <div className="w-9 h-9 rounded-full bg-[#06b6d4]/15 border border-[#06b6d4]/30 flex items-center justify-center text-[#06b6d4] shrink-0">
                       <Bookmark size={16} />
@@ -4538,19 +5779,53 @@ const getGpsErrorMessage = (error) => {
                       <span className="font-semibold text-sm text-slate-100 group-hover:text-[#06b6d4] transition-colors block truncate">{place.name}</span>
                       <p className="text-xs text-slate-400 truncate mt-0.5">{place.address}</p>
                     </div>
+                    <button
+                      type="button"
+                      onClick={(event) => handleDeleteSavedPlace(place.id, event)}
+                      className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-slate-500 hover:bg-[#ef4444]/15 hover:text-[#ef4444]"
+                      title="Delete saved place"
+                    >
+                      <Trash2 size={14} />
+                    </button>
                   </div>
                 ))
               )}
             </div>
 
-            {/* History Link */}
-            <button 
-              onClick={() => { playClickSound(); triggerToast("Recent Records", "Cookie history log loaded fully.", false); }}
-              className="mt-2 py-2 text-center text-xs font-semibold text-[#06b6d4] hover:text-[#ef4444] hover:underline border-t border-[#06b6d4]/15 flex items-center justify-center gap-2"
-            >
-              <Info size={12} />
-              <span>More from recent history</span>
-            </button>
+            <div className="mt-3 border-t border-[#06b6d4]/15 pt-3">
+              <div className="px-2 pb-2 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                Recent searches
+              </div>
+              {searchHistory.length === 0 ? (
+                <div className="rounded-xl border border-[#06b6d4]/15 bg-[#030712]/60 px-3 py-3 text-xs leading-relaxed text-slate-400">
+                  No recent searches yet.
+                </div>
+              ) : (
+                searchHistory.slice(0, 8).map((entry) => (
+                  <div
+                    key={entry.id}
+                    onClick={() => handleSelectSearchHistory(entry)}
+                    className="flex items-center gap-3 rounded-xl p-2.5 text-left transition-all hover:bg-[#1c2541]"
+                  >
+                    <div className="grid h-9 w-9 shrink-0 place-items-center rounded-full border border-[#06b6d4]/20 bg-[#06b6d4]/10 text-[#06b6d4]">
+                      <Clock size={15} />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <span className="block truncate text-sm font-semibold text-slate-100">{entry.query}</span>
+                      <p className="mt-0.5 truncate text-xs text-slate-500">{entry.place?.address || 'Recent search'}</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={(event) => handleDeleteSearchHistory(entry.id, event)}
+                      className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-slate-500 hover:bg-[#ef4444]/15 hover:text-[#ef4444]"
+                      title="Delete search"
+                    >
+                      <Trash2 size={14} />
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
           </div>
           )}
         </section>
@@ -4666,6 +5941,7 @@ const getGpsErrorMessage = (error) => {
                       handleRouteSearchSelect(suggestion.place);
                     } else {
                       playClickSound();
+                      rememberSearch(suggestion.place.name, suggestion.place);
                       setSearchQuery(suggestion.place.name);
                       handleSelectLocation(suggestion.place);
                     }
@@ -4687,6 +5963,37 @@ const getGpsErrorMessage = (error) => {
           {!routeSearchTarget && searchQuery.trim().length >= 3 && searchSuggestions.length === 0 && (
             <div className="pointer-events-auto rounded-3xl bg-[#121212]/96 px-4 py-3 text-sm text-slate-300 shadow-2xl">
               {globalSearchLoading ? 'Reading map and searching nearby data...' : 'No result in loaded map data yet. Press arrow to search this text.'}
+            </div>
+          )}
+
+          {!routeSearchTarget && !searchQuery.trim() && searchHistory.length > 0 && (
+            <div className="pointer-events-auto max-h-[34vh] overflow-y-auto rounded-3xl bg-[#121212]/96 py-2 shadow-2xl">
+              <div className="px-4 pb-1 pt-2 text-[10px] font-bold uppercase tracking-wide text-slate-500">
+                Recent searches
+              </div>
+              {searchHistory.slice(0, 8).map((entry) => (
+                <div
+                  key={entry.id}
+                  onClick={() => handleSelectSearchHistory(entry)}
+                  className="flex w-full items-center gap-3 px-4 py-3 text-left"
+                >
+                  <div className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-slate-700 text-slate-200">
+                    <Clock size={20} />
+                  </div>
+                  <div className="min-w-0 flex-1 border-b border-white/10 pb-2">
+                    <div className="truncate text-base font-semibold text-slate-50">{entry.query}</div>
+                    <div className="truncate text-sm text-slate-400">{entry.place?.address || 'Recent search'}</div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={(event) => handleDeleteSearchHistory(entry.id, event)}
+                    className="grid h-10 w-10 shrink-0 place-items-center rounded-full text-slate-400 hover:bg-red-500/15 hover:text-red-300"
+                    title="Delete search"
+                  >
+                    <Trash2 size={18} />
+                  </button>
+                </div>
+              ))}
             </div>
           )}
 
@@ -4773,7 +6080,7 @@ const getGpsErrorMessage = (error) => {
             </span>
           </div>
 
-          <div className="grid grid-cols-4 gap-1.5 md:gap-2">
+          <div className="grid grid-cols-5 gap-1.5 md:gap-2">
             <button onClick={handleDrawRoute} className="map-action-button" title="Directions">
               <Route size={16} />
               <span>Directions</span>
@@ -4781,6 +6088,10 @@ const getGpsErrorMessage = (error) => {
             <button onClick={handleSaveLocation} className="map-action-button" title="Save">
               <Bookmark size={16} />
               <span>Save</span>
+            </button>
+            <button onClick={openPlaceRequest} className="map-action-button" title="Add your location for free">
+              <Plus size={16} />
+              <span>Add</span>
             </button>
             <button onClick={handleNearbySearch} className="map-action-button" title="Nearby">
               <MapPin size={16} />
@@ -5015,6 +6326,7 @@ const getGpsErrorMessage = (error) => {
             onShareProgress={handleMobileShareProgress}
             onSatellite={handleMobileSatellite}
             onOpenSettings={() => openMobileSettings('home')}
+            onPreviewStepChange={handleNavigationPreviewStepChange}
           />
         )}
 
@@ -5027,6 +6339,8 @@ const getGpsErrorMessage = (error) => {
             onSpeedUnitChange={handleSpeedUnitChange}
             onLogin={handleMobileLogin}
             onLogout={handleMobileLogout}
+            authUser={authUser}
+            authBusy={authBusy}
           />
         )}
 
@@ -5104,14 +6418,16 @@ const getGpsErrorMessage = (error) => {
         )}
 
         {mobileMode !== 'nav' && !mobileSheetOpen && !routeSearchTarget && (
-          <button
-            type="button"
-            onClick={() => { playClickSound(); setMobileSheetOpen(true); }}
-            className="fixed bottom-[calc(env(safe-area-inset-bottom)+14px)] left-1/2 z-50 flex -translate-x-1/2 items-center gap-2 rounded-full bg-[#101113]/95 px-5 py-3 text-sm font-bold text-slate-100 shadow-2xl backdrop-blur md:hidden"
-          >
-            <MapPin size={17} className="text-cyan-300" />
-            Place panel
-          </button>
+          <div className="fixed bottom-[calc(env(safe-area-inset-bottom)+14px)] left-1/2 z-50 flex -translate-x-1/2 items-center gap-2 md:hidden">
+            <button
+              type="button"
+              onClick={() => { playClickSound(); setMobileSheetOpen(true); }}
+              className="flex items-center gap-2 rounded-full bg-[#101113]/95 px-5 py-3 text-sm font-bold text-slate-100 shadow-2xl backdrop-blur"
+            >
+              <MapPin size={17} className="text-cyan-300" />
+              Place panel
+            </button>
+          </div>
         )}
 
         {/* MOBILE PLACE / ROUTE SHEET */}
@@ -5163,6 +6479,10 @@ const getGpsErrorMessage = (error) => {
                 <button onClick={handleSaveLocation} className="mobile-secondary-pill">
                   <Bookmark size={18} />
                   Save
+                </button>
+                <button onClick={openPlaceRequest} className="mobile-secondary-pill">
+                  <Plus size={18} />
+                  Add
                 </button>
               </div>
             </>
@@ -5317,6 +6637,87 @@ const getGpsErrorMessage = (error) => {
         )}
 
       </div>
+
+      {placeRequestOpen && (
+        <div className="fixed inset-0 z-[90] flex items-end justify-center bg-black/70 p-3 backdrop-blur-sm md:items-center">
+          <form onSubmit={handlePlaceRequestSubmit} className="w-full max-w-md rounded-3xl border border-white/10 bg-[#101113] p-4 text-slate-100 shadow-2xl">
+            <div className="mb-4 flex items-start justify-between gap-3">
+              <div>
+                <h3 className="text-lg font-bold">Add a place</h3>
+                <p className="mt-1 text-xs leading-relaxed text-slate-400">
+                  Send the name, address, and optional image for admin review.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPlaceRequestOpen(false)}
+                className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-white/10 text-slate-200"
+                title="Close"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <label className="mb-3 block text-xs font-bold uppercase tracking-wide text-slate-400">
+                Place name
+                <input
+                  type="text"
+                  autoFocus
+                  value={placeRequestForm.name}
+                  onChange={(event) => setPlaceRequestForm((current) => ({ ...current, name: event.target.value }))}
+                  className="mt-1 w-full rounded-2xl border border-white/10 bg-black/35 px-4 py-3 text-sm font-semibold normal-case tracking-normal text-white outline-none focus:border-cyan-300"
+                  placeholder="Example: Style Union Kompally"
+                  maxLength={90}
+                />
+              </label>
+
+              <label className="block text-xs font-bold uppercase tracking-wide text-slate-400">
+                Full address
+                <textarea
+                  value={placeRequestForm.address}
+                  onChange={(event) => setPlaceRequestForm((current) => ({ ...current, address: event.target.value }))}
+                  className="mt-1 min-h-[104px] w-full resize-none rounded-2xl border border-white/10 bg-black/35 px-4 py-3 text-sm font-semibold normal-case tracking-normal text-white outline-none focus:border-cyan-300"
+                  placeholder="Example: 2, Medchal Rd, Ruby Block, Kompally..."
+                  maxLength={260}
+                />
+              </label>
+
+              <label className="block text-xs font-bold uppercase tracking-wide text-slate-400">
+                Image optional
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={(event) => setPlaceRequestImage(event.target.files?.[0] || null)}
+                  className="mt-1 w-full rounded-2xl border border-white/10 bg-black/35 px-4 py-3 text-sm font-semibold normal-case tracking-normal text-slate-200 outline-none file:mr-3 file:rounded-full file:border-0 file:bg-cyan-300 file:px-3 file:py-1 file:text-xs file:font-black file:text-[#062024]"
+                />
+                {placeRequestImage && (
+                  <span className="mt-1 block truncate text-[11px] normal-case tracking-normal text-cyan-200">
+                    {placeRequestImage.name}
+                  </span>
+                )}
+              </label>
+            </div>
+
+            <div className="mt-4 flex gap-2">
+              <button
+                type="button"
+                onClick={() => setPlaceRequestOpen(false)}
+                className="flex-1 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm font-bold text-slate-200"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={placeRequestSubmitting}
+                className="flex-1 rounded-2xl bg-cyan-300 px-4 py-3 text-sm font-black text-[#062024] disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {placeRequestSubmitting ? 'Sending...' : 'Send request'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
 
       {/* CLASSIC LAYOUT REFERENCE COMPARISON MODAL */}
       {compareModalOpen && (
