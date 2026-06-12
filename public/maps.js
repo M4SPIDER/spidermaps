@@ -1,3 +1,16 @@
+// Add your own map places here.
+//
+// Required fields:
+// - id: unique lowercase text, like "zudio-kompally". Do not reuse built-in ids
+//   such as "home", "work", "hyderabad", or "goa".
+// - name: the place name shown in search and on the map.
+// - coords: [latitude, longitude], always in that order.
+//
+// Optional fields:
+// - address, type, aliases, image.
+// - image can be a URL or a public asset path like "/places/name.jpg".
+//
+// Bad rows are ignored by the app instead of breaking all places.
 export const customMapPlaces = [
   {
     id: 'zudio-kompally',
@@ -52,7 +65,23 @@ export const customMapPlaces = [
     type: 'school',
     aliases: 'suchitra academy international school campus education high school school circle',
     image: ''
+  },
+  {
+    id: 'basavatarakam-cancer-hospital',
+    name: 'Basavatarakam Indo American Cancer Hospital & Research Institute',
+    coords: [17.4171079, 78.4305233],
+    address: 'Road No. 10, IAS Officers Quaters, Nandi Nagar, Banjara Hills, Hyderabad, Telangana 500034',
+    type: 'hospital',
+    aliases: 'basavatarakam indo american cancer hospital research institute banjara hills road 10 medical center oncology healthcare trust',
+    image: ''
+  },
+  {
+    id: 'varun-house-malkajgiri',
+    name: "Varun's House",
+    coords: [17.453303, 78.532729],
+    address: 'Near Sree Sarikonda Narsimha Reddy Gardens, Raghavendra Theatre Road, Narsimha Reddy Nagar, Malkajgiri, Hyderabad, Telangana 500047',
+    type: 'home',
+    aliases: 'varun house home varuns residence malkajgiri narsimha reddy community hall function palace garden ramalayam temple',
+    image: ''
   }
 ];
-
-export default customMapPlaces;
