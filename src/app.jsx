@@ -7,6 +7,7 @@ import {
   onAuthStateChanged,
   signInWithCredential,
   signInWithPopup,
+  deleteUser,
   signOut
 } from 'firebase/auth';
 import 'maplibre-gl/dist/maplibre-gl.css';
@@ -51,9 +52,9 @@ const NAVIGATION_NOTIFICATION_ID = 5305;
 const NAVIGATION_NOTIFICATION_CHANNEL = 'spidermaps-navigation-alerts-v3';
 const NAVIGATION_NOTIFICATION_ACTION_TYPE = 'spidermaps-navigation-actions';
 const EXIT_NAVIGATION_ACTION = 'exit-navigation';
-const NAV_SNAP_TO_ROUTE_METERS = 20;
-const NAV_OFF_ROUTE_METERS = 20;
-const NAV_REROUTE_COOLDOWN_MS = 18000;
+const NAV_SNAP_TO_ROUTE_METERS = 35;
+const NAV_OFF_ROUTE_METERS = 45;
+const NAV_REROUTE_COOLDOWN_MS = 45000;
 const NAV_ARRIVAL_METERS = 35;
 const NAV_ETA_UPDATE_MIN_MS = 120000;
 const NAV_ETA_SIGNIFICANT_CHANGE_MIN = 2;
@@ -203,11 +204,19 @@ const loadRemoteMapPlaces = async () => {
   for (const url of REMOTE_MAP_PLACE_URLS) {
     try {
       if (/\.m?js(?:$|\?)/i.test(url)) {
-        const module = await import(/* @vite-ignore */ `${url}${url.includes('?') ? '&' : '?'}v=${Date.now()}`);
-        return {
-          places: module.customMapPlaces || module.mapPlaces || module.places || module.default || [],
-          source: url
-        };
+        const script = await fetchTextWithTimeout(`${url}${url.includes('?') ? '&' : '?'}v=${Date.now()}`, {
+          cache: 'no-store'
+        }, 8000);
+        const moduleUrl = URL.createObjectURL(new Blob([script], { type: 'text/javascript' }));
+        try {
+          const module = await import(/* @vite-ignore */ `${moduleUrl}#${Date.now()}`);
+          return {
+            places: module.customMapPlaces || module.mapPlaces || module.places || module.default || [],
+            source: url
+          };
+        } finally {
+          URL.revokeObjectURL(moduleUrl);
+        }
       }
 
       const payload = await fetchJsonWithTimeout(url, { cache: 'no-store' }, 8000);
@@ -228,30 +237,6 @@ const builtInPlacesDatabase = {
     temp: "31°C",
     traffic: "Verified local apartment result",
     type: "apartment"
-  },
-  ambMall: {
-    name: "AMB Mall Hyderabad",
-    coords: [17.4576, 78.3639],
-    address: "Sarath City Capital Mall, Kondapur, Hyderabad, Telangana",
-    temp: "31°C",
-    traffic: "Popular mall and cinema destination; traffic may be heavy near Kondapur.",
-    type: "mall"
-  },
-  sits: {
-    name: "Siddhartha Institute of Technology & Sciences (SITS)",
-    coords: [17.41045, 78.63526],
-    address: "Narapally village, Peerzadiguda, Hyderabad, Telangana 500088",
-    temp: "31°C",
-    traffic: "Campus approach roads may slow near peak college hours",
-    type: "college"
-  },
-  mallaReddyCollege: {
-    name: "Malla Reddy College",
-    coords: [17.5932, 78.4449],
-    address: "Maisammaguda, Dulapally, Hyderabad, Telangana",
-    temp: "31°C",
-    traffic: "Campus route estimate available near Maisammaguda / Dulapally",
-    type: "college"
   },
   hmtGroundChintal: {
     name: "HMT Ground Chintal",
@@ -949,6 +934,18 @@ const fetchJsonWithTimeout = async (url, options = {}, timeoutMs = 6500) => {
   }
 };
 
+const fetchTextWithTimeout = async (url, options = {}, timeoutMs = 6500) => {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    if (!response.ok) throw new Error(`Request failed: ${response.status}`);
+    return response.text();
+  } finally {
+    window.clearTimeout(timer);
+  }
+};
+
 const getEditDistance = (a, b) => {
   if (!a.length) return b.length;
   if (!b.length) return a.length;
@@ -1122,27 +1119,58 @@ const getManeuverTurnAngle = (maneuver = {}) => {
 const isSoftManeuverTurn = (maneuver = {}) => {
   const modifier = String(maneuver.modifier || '').toLowerCase();
   const angle = getManeuverTurnAngle(maneuver);
-  return modifier.includes('slight') || (Number.isFinite(angle) && angle < 35);
+  return modifier.includes('slight') || (Number.isFinite(angle) && angle < 70);
 };
+
+const MAX_REASONABLE_ROUTE_KM = 2000;
+const isReasonableRouteDistance = (distanceKm = 0) => Number.isFinite(distanceKm) && distanceKm <= MAX_REASONABLE_ROUTE_KM;
 
 const formatRouteInstruction = (step) => {
   const maneuver = step?.maneuver || {};
-  const roadName = step?.name ? ` ${step.name}` : '';
   const modifier = maneuver.modifier || '';
-  const distance = step?.distance ? Math.max(10, Math.round(step.distance / 10) * 10) : 0;
-  const distanceText = distance ? `${distance} m` : 'soon';
   const softTurn = isSoftManeuverTurn(maneuver);
 
   if (maneuver.type === 'arrive') return 'Arrive at destination';
-  if (maneuver.type === 'depart') return `Go straight${roadName}`;
+  if (maneuver.type === 'depart') return 'Start route';
+  if (maneuver.type === 'uturn' || modifier.includes('uturn') || modifier.includes('u-turn')) return 'Make a U-turn';
   if ((modifier.includes('left') || modifier.includes('right')) && softTurn) {
-    return `Continue for ${distanceText}${roadName}`;
+    return modifier.includes('left') ? 'Bear left' : 'Bear right';
   }
-  if (modifier.includes('left')) return `Turn left in ${distanceText}${roadName}`;
-  if (modifier.includes('right')) return `Turn right in ${distanceText}${roadName}`;
-  if (modifier.includes('straight')) return `Go straight for ${distanceText}${roadName}`;
-  if (maneuver.type === 'roundabout') return `Enter roundabout in ${distanceText}${roadName}`;
-  return `Continue for ${distanceText}${roadName}`;
+  if (modifier.includes('left')) return 'Turn left';
+  if (modifier.includes('right')) return 'Turn right';
+  if (modifier.includes('straight')) return 'Go straight';
+  if (maneuver.type === 'roundabout') return 'Enter roundabout';
+  return 'Continue';
+};
+
+const getRouteStepKind = (step) => {
+  const maneuver = step?.maneuver || {};
+  const modifier = String(maneuver.modifier || '').toLowerCase();
+  const text = `${step?.name || ''} ${step?.ref || ''} ${step?.maneuver?.type || ''}`.toLowerCase();
+  if (maneuver.type === 'uturn' || modifier.includes('uturn') || modifier.includes('u-turn') || /\bu[-\s]?turn\b|\bturn around\b/.test(text)) return 'uturn';
+  if (isSoftManeuverTurn(maneuver) && modifier.includes('left')) return 'bend-left';
+  if (isSoftManeuverTurn(maneuver) && modifier.includes('right')) return 'bend-right';
+  if (modifier.includes('left')) return 'left';
+  if (modifier.includes('right')) return 'right';
+  if (/\b(flyover|overpass|viaduct|elevated|bridge|ramp)\b/.test(text)) return 'flyover';
+  if (/\b(zig[\s-]?zag|winding|hairpin|switchback|ghat)\b/.test(text)) return 'winding';
+  return null;
+};
+
+const buildRouteDisplaySteps = (steps = []) => {
+  let progressMeters = 0;
+  return steps.map((step) => {
+    const displayStep = {
+      instruction: formatRouteInstruction(step),
+      distance: step.distance || 0,
+      progressMeters,
+      coords: step.maneuver?.location ? [step.maneuver.location[1], step.maneuver.location[0]] : null,
+      name: step.name || '',
+      kind: getRouteStepKind(step)
+    };
+    progressMeters += Number(step.distance || 0);
+    return displayStep;
+  });
 };
 
 const getEstimatedRouteMinutes = (distanceKm, mode) => (
@@ -1265,6 +1293,7 @@ const getRoutePointAtProgress = (routeCoordinates = [], targetProgressMeters = 0
 };
 
 const getStepProgressMeters = (step, routeCoordinates = []) => {
+  if (Number.isFinite(step?.progressMeters)) return step.progressMeters;
   if (!step?.coords || routeCoordinates.length < 2) return null;
   return getRouteProgress(step.coords, routeCoordinates).progressMeters;
 };
@@ -1274,15 +1303,20 @@ const formatLiveStepInstruction = (step, metersAway) => {
   const roundedDistance = Math.max(10, Math.round((metersAway || 0) / 10) * 10);
   const nextInstruction = step.instruction || 'Go straight';
   if (/arriv/i.test(nextInstruction)) return nextInstruction;
-  if (/^go straight/i.test(nextInstruction)) return nextInstruction.replace(/for \d+ m/i, `for ${roundedDistance} m`);
-  if (/\bin \d+ m/i.test(nextInstruction)) return nextInstruction.replace(/\bin \d+ m/i, `in ${roundedDistance} m`);
-  if (/^turn/i.test(nextInstruction)) return `${nextInstruction} in ${roundedDistance} m`;
+  if (/^(turn|enter|take|keep|make|bear)/i.test(nextInstruction)) {
+    return nextInstruction.replace(/^(.+?)$/i, (_, action) => `${action} in ${roundedDistance} m`);
+  }
+  if (/^(go straight|continue)/i.test(nextInstruction)) return `${nextInstruction} for ${roundedDistance} m`;
   return nextInstruction;
 };
 
-const getManeuverDisplay = (instruction = '') => {
+const getManeuverDisplay = (instruction = '', kind = '') => {
   const text = String(instruction || '').toLowerCase();
-  if (/\barriv/.test(text)) return { symbol: '\u2713', label: 'Arrived', icon: 'ic_nav_arrive' };
+  if (/\barriv/.test(text)) return { symbol: '⌖', label: 'Arrived', icon: 'ic_nav_arrive' };
+  if (kind === 'uturn' || /\bu[-\s]?turn\b|\bturn around\b/.test(text)) return { symbol: '\u21b6', label: 'U-turn', icon: 'ic_nav_uturn' };
+  if (kind === 'left' || kind === 'bend-left') return { symbol: '\u21b0', label: 'Turn left', icon: 'ic_nav_turn_left' };
+  if (kind === 'right' || kind === 'bend-right') return { symbol: '\u21b1', label: 'Turn right', icon: 'ic_nav_turn_right' };
+  if (kind === 'straight') return { symbol: '\u2191', label: 'Go straight', icon: 'ic_nav_straight' };
   if (/\bu[-\s]?turn\b|\bmake a u\b/.test(text)) return { symbol: '\u21b6', label: 'U-turn', icon: 'ic_nav_uturn' };
   if (/\bleft\b/.test(text)) return { symbol: '\u21b0', label: 'Turn left', icon: 'ic_nav_turn_left' };
   if (/\bright\b/.test(text)) return { symbol: '\u21b1', label: 'Turn right', icon: 'ic_nav_turn_right' };
@@ -1295,6 +1329,7 @@ const getNavigationVoiceManeuver = (instruction = '') => {
   if (/\barriv/.test(text)) return 'arrived';
   if (/\brerout|\boff route\b/.test(text)) return 'rerouting';
   if (/\bu[-\s]?turn\b|\bmake a u\b/.test(text)) return 'u_turn';
+  if (/^\s*(bear|keep|continue)\b/.test(text)) return 'continue_straight';
   if (/\bleft\b/.test(text)) return 'turn_left';
   if (/\bright\b/.test(text)) return 'turn_right';
   if (/\broundabout\b/.test(text)) return 'roundabout';
@@ -1536,7 +1571,12 @@ const loadEnglishVectorStyle = async (styleName = 'normal') => {
           id: 'satellite',
           type: 'raster',
           source: 'satellite',
-          paint: { 'raster-saturation': 0.08, 'raster-contrast': 0.08 }
+          paint: {
+            'raster-saturation': 0.08,
+            'raster-contrast': 0.08,
+            'raster-resampling': 'linear',
+            'raster-fade-duration': 100
+          }
         },
         roadCasingLayer,
         minorRoadLayer,
@@ -1559,6 +1599,7 @@ const loadEnglishVectorStyle = async (styleName = 'normal') => {
 export default function App() {
   const [leafletLoaded, setLeafletLoaded] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [searchFocused, setSearchFocused] = useState(false);
   const [activeLocation, setActiveLocation] = useState(DEFAULT_ACTIVE_LOCATION);
   const [savedPlaces, setSavedPlaces] = useState([]);
   const [remoteMapPlaces, setRemoteMapPlaces] = useState({});
@@ -1567,7 +1608,7 @@ export default function App() {
   const [searchCenterOverride, setSearchCenterOverride] = useState(null);
   const [globalSearchLoading, setGlobalSearchLoading] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(false);
-  const [mapStyle, setMapStyle] = useState('dark');
+  const [mapStyle, setMapStyle] = useState('normal');
   const [travelMode, setTravelMode] = useState('car');
   const [routeStartKey, setRouteStartKey] = useState('gps');
   const [routeCustomStartPlace, setRouteCustomStartPlace] = useState(null);
@@ -1632,6 +1673,7 @@ export default function App() {
   const latestRouteMetaRef = useRef(null);
   const latestActiveLocationRef = useRef(DEFAULT_ACTIVE_LOCATION);
   const latestMobileModeRef = useRef('place');
+  const wakeLockRef = useRef(null);
   const exitNavigationRef = useRef(null);
   const arrivalUnlockTimerRef = useRef(null);
 
@@ -1928,11 +1970,20 @@ export default function App() {
 
     const localSuggestions = searchablePlaces
       .filter((item) => fuzzySearch(searchQuery, item.text))
-      .map((item) => ({
-        ...item,
-        source: 'local',
-        score: getSearchScore(searchQuery, item.text)
-      }))
+      .map((item) => {
+        const nameNormalized = normalizeSearchText(item.place?.name || '');
+        const exactNameMatch = cleanedQuery && nameNormalized === cleanedQuery;
+        const nameStarts = cleanedQuery && nameNormalized.startsWith(cleanedQuery);
+        let baseScore = getSearchScore(searchQuery, item.text);
+        // Strong boost for an exact name match so older/built-in places appear for exact queries
+        if (exactNameMatch) baseScore = Math.max(baseScore, 140);
+        else if (nameStarts) baseScore = Math.max(baseScore, baseScore + 24);
+        return {
+          ...item,
+          source: 'local',
+          score: baseScore
+        };
+      })
       .filter((item) => item.score > 0)
       .sort((a, b) => b.score - a.score)
       .slice(0, 5);
@@ -2319,7 +2370,8 @@ export default function App() {
         maxTileCacheSize: isCompactViewport ? 48 : 128,
         maxPitch: 0,
         renderWorldCopies: true,
-        collectResourceTiming: false
+        collectResourceTiming: false,
+        pixelRatio: Math.min(window.devicePixelRatio || 1, 2)
       });
 
       leafletMapInstance.current = map;
@@ -2354,6 +2406,16 @@ export default function App() {
       });
 
       map.on('click', handleMapClick);
+      map.on('dragstart', () => {
+        if (window.__SPIDER_NAV_ACTIVE__) {
+          setMobileRecenterExpanded(true);
+        }
+      });
+      map.on('zoomstart', () => {
+        if (window.__SPIDER_NAV_ACTIVE__) {
+          setMobileRecenterExpanded(true);
+        }
+      });
     };
 
     initMap().catch(() => {
@@ -2399,15 +2461,23 @@ export default function App() {
 
     let cancelled = false;
 
-    loadEnglishVectorStyle(mapStyle)
+      loadEnglishVectorStyle(mapStyle)
       .then((nextStyle) => {
         if (cancelled || !leafletMapInstance.current) return;
         activeBaseStyleRef.current = mapStyle;
         const nextMinZoom = getMinZoomForStyle(mapStyle);
         map.getContainer().classList.add('spider-map-switching');
         map.setMinZoom(nextMinZoom);
+        if (mapStyle === 'satellite') {
+          map.setMaxZoom(14);
+        } else {
+          map.setMaxZoom(22);
+        }
         if (map.getZoom() < nextMinZoom) {
           map.setZoom(nextMinZoom);
+        }
+        if (mapStyle === 'satellite' && map.getZoom() > 14) {
+          map.setZoom(14);
         }
         map.setStyle(nextStyle, { diff: false });
         map.once('idle', () => {
@@ -3095,37 +3165,7 @@ export default function App() {
           renderUserLocationMarker(displayCoords, { label: 'Current location', heading: displayHeading, variant: 'nav-live' });
         }
         clearRouteStartLeg();
-        if (leafletMapInstance.current) {
-          const nowForCamera = Date.now();
-          const cameraDistance = navCameraRef.current.lastCenter
-            ? getDistanceMeters(navCameraRef.current.lastCenter, displayCoords)
-            : Number.POSITIVE_INFINITY;
-          const shouldEaseCamera = !navigationPreviewStepRef.current
-            && (
-              nowForCamera - navCameraRef.current.lastEaseAt > 1600
-              || cameraDistance > Math.max(12, speedKmh * 0.55)
-            );
-          if (shouldEaseCamera) {
-            navCameraRef.current = { lastEaseAt: nowForCamera, lastCenter: displayCoords };
-            leafletMapInstance.current.easeTo({
-              center: toLngLat(displayCoords),
-              bearing: displayHeading,
-              zoom: Math.max(leafletMapInstance.current.getZoom(), 16),
-              offset: [0, 110],
-              duration: 650
-            });
-            window.setTimeout(() => {
-              if (navigationPreviewStepRef.current) return;
-              const latestCoords = navTelemetryRef.current.displayCoords;
-              if (!latestCoords) return;
-              renderUserLocationMarker(latestCoords, {
-                label: 'Current location',
-                heading: navTelemetryRef.current.heading,
-                variant: 'nav-live'
-              });
-            }, 700);
-          }
-        }
+        // Auto-recenter disabled: only manual recenter via button
 
         const destination = lastRouteEndpointsRef.current?.end;
         if (destination) {
@@ -3264,6 +3304,7 @@ export default function App() {
               fuel: `${fuelLiters.toFixed(1)} L`,
               instruction: liveInstruction,
               nextInstruction: nextStep?.name || current.routeTo || current.nextInstruction,
+              maneuverKind: nextStep?.kind || null,
               offRouteDistance: null
             };
             const uiKey = [
@@ -3271,6 +3312,7 @@ export default function App() {
               nextMeta.duration,
               nextMeta.instruction,
               nextMeta.nextInstruction,
+              nextMeta.maneuverKind || '',
               nextMeta.offRouteDistance || ''
             ].join('|');
             const nowForUi = Date.now();
@@ -3398,6 +3440,7 @@ export default function App() {
       const distanceKmValue = candidate.distance / 1000;
       const minutesValue = getRouteDurationMinutes(candidate, distanceKmValue, selectedMode);
       const fuelValue = selectedMode.fuelKmPerLiter ? Math.max(0.1, distanceKmValue / selectedMode.fuelKmPerLiter) : 0;
+      const steps = candidate.legs?.flatMap((leg) => leg.steps || []) || [];
       return {
         id: `route-${index}`,
         index,
@@ -3406,8 +3449,24 @@ export default function App() {
         durationMinutes: minutesValue,
         fuelLiters: fuelValue,
         label: candidateLabel || (index === 0 ? 'Fastest route' : `Alternative ${index + 1}`),
-        steps: candidate.legs?.flatMap((leg) => leg.steps || []) || []
+        steps,
+        flyoverCount: steps.reduce((count, step) => count + (getRouteStepKind(step) === 'flyover' ? 1 : 0), 0),
+        rawRoute: candidate
       };
+    };
+
+    const choosePreferredRoute = (routes = []) => {
+      if (!routes.length) return null;
+      const fastestDuration = Math.min(...routes.map((route) => route.durationMinutes).filter(Number.isFinite));
+      if (!Number.isFinite(fastestDuration)) return routes[0];
+      const closeWindow = Math.max(2, fastestDuration * 0.08);
+      const contenders = routes.filter((route) => (route.durationMinutes - fastestDuration) <= closeWindow);
+      const rankedContenders = contenders.length ? contenders : routes;
+      return [...rankedContenders].sort((a, b) => {
+        if ((b.flyoverCount || 0) !== (a.flyoverCount || 0)) return (b.flyoverCount || 0) - (a.flyoverCount || 0);
+        if (a.durationMinutes !== b.durationMinutes) return a.durationMinutes - b.durationMinutes;
+        return a.distanceKm - b.distanceKm;
+      })[0];
     };
 
     const routeSimilarity = (a, b) => {
@@ -3463,9 +3522,6 @@ export default function App() {
       const response = await fetch(routeUrl);
       if (!response.ok) throw new Error('OSRM route request failed');
       const data = await response.json();
-      const route = data.routes?.[0];
-      if (!route) throw new Error('No OSRM route returned');
-
       let alternativeRoutes = (data.routes || []).map((candidate, index) => buildRouteCandidate(candidate, index));
       if (alternativeRoutes.length < 2 && alternativeRoutes[0]) {
         const waypointRoutes = await fetchWaypointAlternatives(alternativeRoutes[0]);
@@ -3481,7 +3537,15 @@ export default function App() {
           }
         });
       }
-      const primaryRoute = alternativeRoutes[0];
+      const primaryRoute = choosePreferredRoute(alternativeRoutes);
+      if (!primaryRoute) throw new Error('No OSRM route returned');
+
+      alternativeRoutes = [primaryRoute, ...alternativeRoutes.filter((candidate) => candidate.id !== primaryRoute.id)].map((candidate, index) => ({
+        ...candidate,
+        index,
+        label: index === 0 ? 'Fastest route' : `Alternative ${index + 1}`
+      }));
+
       if (primaryRoute) {
         const alternativeColors = ['#ef4444', '#2563eb', '#7c3aed', '#0891b2', '#f97316', '#16a34a'];
         alternativeRoutes = alternativeRoutes.map((candidate) => {
@@ -3502,16 +3566,52 @@ export default function App() {
         });
       }
       setRouteAlternatives(alternativeRoutes);
-      setSelectedRouteId(alternativeRoutes[0]?.id || null);
+      setSelectedRouteId(primaryRoute.id);
 
+      const route = primaryRoute.rawRoute;
       const routeCoordinates = route.geometry.coordinates.map(([lng, lat]) => [lat, lng]);
-      drawRouteLine(routeCoordinates, alternativeRoutes.slice(1));
       const distanceKm = route.distance / 1000;
+      if (!isReasonableRouteDistance(distanceKm)) {
+        setRouteAlternatives([]);
+        setSelectedRouteId(null);
+        routeLineCoordinatesRef.current = [];
+        routeInteractionLockedRef.current = false;
+        setRouteActive(false);
+        setMobileMode('route');
+        setMobileSheetOpen(true);
+        setMobileNavMenuOpen(false);
+        setMobileRecenterExpanded(false);
+        renderRouteLine([]);
+        clearRouteEndpointMarkers();
+        clearRouteLastLeg();
+        setRouteMeta({
+          distance: '--',
+          duration: '--',
+          fuel: '--',
+          source: selectedMode.label,
+          routeFrom: startLabel,
+          routeTo: label,
+          routeVia: waypoint?.name || null,
+          routeSummary,
+          routeDistanceMeters: 0,
+          estimateLabel: `${selectedMode.label} estimate`,
+          instruction: 'No drivable route available',
+          nextInstruction: label,
+          maneuverKind: 'arrive',
+          steps: [],
+          constructionHits: []
+        });
+        triggerToast("Route unavailable", "No drivable road route found for this destination.", true);
+        return false;
+      }
+      drawRouteLine(routeCoordinates, alternativeRoutes.slice(1));
       const durationMinutes = getRouteDurationMinutes(route, distanceKm, selectedMode);
       const fuelLiters = selectedMode.fuelKmPerLiter ? Math.max(0.1, distanceKm / selectedMode.fuelKmPerLiter) : 0;
       const constructionHits = getConstructionHitsForRoute(routeCoordinates);
       const routeSteps = route.legs?.flatMap((leg) => leg.steps || []) || [];
       const firstActionStep = routeSteps.find((step) => step.maneuver?.type !== 'depart') || routeSteps[0];
+      const displaySteps = buildRouteDisplaySteps(routeSteps);
+      const firstActionIndex = Math.max(0, routeSteps.indexOf(firstActionStep));
 
       setRouteMeta({
         distance: `${distanceKm.toFixed(1)} km`,
@@ -3526,12 +3626,8 @@ export default function App() {
         estimateLabel: `${selectedMode.label} estimate`,
         instruction: formatRouteInstruction(firstActionStep),
         nextInstruction: firstActionStep?.name || label,
-        steps: routeSteps.map((step) => ({
-          instruction: formatRouteInstruction(step),
-          distance: step.distance || 0,
-          coords: step.maneuver?.location ? [step.maneuver.location[1], step.maneuver.location[0]] : null,
-          name: step.name || ''
-        })),
+        maneuverKind: displaySteps[firstActionIndex]?.kind || null,
+        steps: displaySteps,
         constructionHits
       });
       routeInteractionLockedRef.current = true;
@@ -3549,36 +3645,37 @@ export default function App() {
         return drawRouteBetween(start, end, label, 'walking', startLabel, waypoint, false);
       }
 
-      const fallbackRoute = waypoint ? [start, waypoint.coords, end] : [start, end];
-      const distanceKm = fallbackRoute
-        .slice(1)
-        .reduce((total, coord, index) => total + getDistanceMeters(fallbackRoute[index], coord), 0) / 1000;
-      const durationMinutes = getEstimatedRouteMinutes(distanceKm, selectedMode);
-      const fuelLiters = selectedMode.fuelKmPerLiter ? Math.max(0.1, distanceKm / selectedMode.fuelKmPerLiter) : 0;
-      const constructionHits = getConstructionHitsForRoute(fallbackRoute);
       setRouteAlternatives([]);
       setSelectedRouteId(null);
-      drawRouteLine(fallbackRoute);
+      routeLineCoordinatesRef.current = [];
+      routeInteractionLockedRef.current = false;
+      setRouteActive(false);
+      setMobileMode('route');
+      setMobileSheetOpen(true);
+      setMobileNavMenuOpen(false);
+      setMobileRecenterExpanded(false);
+      renderRouteLine([]);
+      clearRouteEndpointMarkers();
+      clearRouteLastLeg();
       setRouteMeta({
-        distance: `${distanceKm.toFixed(1)} km`,
-        duration: `${durationMinutes} min`,
-        fuel: `${fuelLiters.toFixed(1)} L`,
+        distance: '--',
+        duration: '--',
+        fuel: '--',
         source: `${selectedMode.label} estimate`,
         routeFrom: startLabel,
         routeTo: label,
         routeVia: waypoint?.name || null,
         routeSummary,
-        routeDistanceMeters: distanceKm * 1000,
+        routeDistanceMeters: 0,
         estimateLabel: `${selectedMode.label} estimate`,
-        instruction: `Go straight towards ${label}`,
+        instruction: 'No drivable route available',
         nextInstruction: label,
-        steps: [{ instruction: `Go straight towards ${label}`, distance: distanceKm * 1000, name: label }],
-        constructionHits
+        maneuverKind: 'arrive',
+        steps: [],
+        constructionHits: []
       });
-      routeInteractionLockedRef.current = true;
-      setRouteActive(true);
-      triggerToast("Navigation Started", "Live routing was unavailable, so a direct estimate was used.", true);
-      return { distanceKm, durationMinutes, fuelLiters, constructionHits };
+      triggerToast("Route unavailable", "No drivable road route found for this destination.", true);
+      return false;
     }
   };
 
@@ -3599,10 +3696,42 @@ export default function App() {
       const routeCoordinates = liveRouteCoordinates.length > 1 ? liveRouteCoordinates : [liveStart, activeDestination];
       const routeDistanceMeters = getRouteLengthMeters(routeCoordinates);
       const distanceKm = routeDistanceMeters / 1000;
+      if (!isReasonableRouteDistance(distanceKm)) {
+        routeLineCoordinatesRef.current = [];
+        setRouteAlternatives((current) => current.filter((route) => route.id !== alternative.id));
+        setSelectedRouteId(null);
+        renderRouteLine([]);
+        clearRouteEndpointMarkers();
+        clearRouteLastLeg();
+        routeInteractionLockedRef.current = false;
+        setRouteActive(false);
+        setMobileMode('route');
+        setMobileSheetOpen(true);
+        setMobileNavMenuOpen(false);
+        setMobileRecenterExpanded(false);
+        setRouteMeta((current) => ({
+          ...current,
+          distance: '--',
+          duration: '--',
+          fuel: '--',
+          routeDistanceMeters: 0,
+          source: selectedMode.label,
+          estimateLabel: alternative.label,
+          instruction: 'No drivable route available',
+          nextInstruction: current?.routeTo || 'destination',
+          maneuverKind: 'arrive',
+          steps: [],
+          constructionHits: []
+        }));
+        triggerToast('Route unavailable', 'No drivable road route found for this destination.', true);
+        return false;
+      }
       const durationMinutes = getEstimatedRouteMinutes(distanceKm, selectedMode);
       const fuelLiters = selectedMode.fuelKmPerLiter ? Math.max(0.1, distanceKm / selectedMode.fuelKmPerLiter) : 0;
       const constructionHits = getConstructionHitsForRoute(routeCoordinates);
       const firstActionStep = alternative.steps.find((step) => step.maneuver?.type !== 'depart') || alternative.steps[0];
+      const displaySteps = buildRouteDisplaySteps(alternative.steps);
+      const firstActionIndex = Math.max(0, alternative.steps.indexOf(firstActionStep));
 
       routeLineCoordinatesRef.current = routeCoordinates;
       navProgressRef.current = { lastProgressMeters: 0, lastRemainingMeters: null, arrived: false };
@@ -3632,12 +3761,8 @@ export default function App() {
         estimateLabel: alternative.label,
         instruction: formatRouteInstruction(firstActionStep),
         nextInstruction: firstActionStep?.name || current?.routeTo || 'destination',
-        steps: alternative.steps.map((step) => ({
-          instruction: formatRouteInstruction(step),
-          distance: step.distance || 0,
-          coords: step.maneuver?.location ? [step.maneuver.location[1], step.maneuver.location[0]] : null,
-          name: step.name || ''
-        })),
+        maneuverKind: displaySteps[firstActionIndex]?.kind || null,
+        steps: displaySteps,
         constructionHits
       }));
       setRouteAlternatives((current) => [
@@ -3656,6 +3781,38 @@ export default function App() {
     navRerouteRef.current = { lastRerouteAt: Date.now(), offRouteHits: 0, currentStepIndex: 0 };
     setSelectedRouteId(alternative.id);
     renderAlternativeRoutes(routeAlternatives.filter((route) => route.id !== alternative.id));
+    const selectedMode = TRAVEL_MODES.find((mode) => mode.id === travelMode) || TRAVEL_MODES[0];
+    const selectedDistanceKm = alternative.distanceKm;
+    if (!isReasonableRouteDistance(selectedDistanceKm)) {
+      routeLineCoordinatesRef.current = [];
+      setRouteAlternatives((current) => current.filter((route) => route.id !== alternative.id));
+      setSelectedRouteId(null);
+      renderRouteLine([]);
+      clearRouteEndpointMarkers();
+      clearRouteLastLeg();
+      routeInteractionLockedRef.current = false;
+      setRouteActive(false);
+      setMobileMode('route');
+      setMobileSheetOpen(true);
+      setMobileNavMenuOpen(false);
+      setMobileRecenterExpanded(false);
+      setRouteMeta((current) => ({
+        ...current,
+        distance: '--',
+        duration: '--',
+        fuel: '--',
+        routeDistanceMeters: 0,
+        source: selectedMode.label,
+        estimateLabel: alternative.label,
+        instruction: 'No drivable route available',
+        nextInstruction: current?.routeTo || 'destination',
+        maneuverKind: 'arrive',
+        steps: [],
+        constructionHits: []
+      }));
+      triggerToast('Route unavailable', 'No drivable road route found for this destination.', true);
+      return false;
+    }
     renderRouteLine(alternative.coordinates);
     if (lastRouteEndpointsRef.current) {
       const { start, end, startLabel, label } = lastRouteEndpointsRef.current;
@@ -3663,9 +3820,10 @@ export default function App() {
       renderRouteLastLeg(alternative.coordinates.at(-1) || end, end);
     }
 
-    const selectedMode = TRAVEL_MODES.find((mode) => mode.id === travelMode) || TRAVEL_MODES[0];
     const constructionHits = getConstructionHitsForRoute(alternative.coordinates);
     const firstActionStep = alternative.steps.find((step) => step.maneuver?.type !== 'depart') || alternative.steps[0];
+    const displaySteps = buildRouteDisplaySteps(alternative.steps);
+    const firstActionIndex = Math.max(0, alternative.steps.indexOf(firstActionStep));
 
     setRouteMeta((current) => ({
       ...current,
@@ -3677,12 +3835,8 @@ export default function App() {
       estimateLabel: alternative.label,
       instruction: formatRouteInstruction(firstActionStep),
       nextInstruction: firstActionStep?.name || current?.routeTo || 'destination',
-      steps: alternative.steps.map((step) => ({
-        instruction: formatRouteInstruction(step),
-        distance: step.distance || 0,
-        coords: step.maneuver?.location ? [step.maneuver.location[1], step.maneuver.location[0]] : null,
-        name: step.name || ''
-      })),
+      maneuverKind: displaySteps[firstActionIndex]?.kind || null,
+      steps: displaySteps,
       constructionHits
     }));
     setRouteAlternatives((current) => [
@@ -4193,6 +4347,52 @@ export default function App() {
   }, [mobileMode, routeActive]);
 
   useEffect(() => {
+    let cancelled = false;
+    const shouldHoldWakeLock = mobileMode === 'nav' && routeActive;
+
+    const requestWakeLock = async () => {
+      if (!shouldHoldWakeLock || !navigator.wakeLock?.request) return;
+      try {
+        wakeLockRef.current = await navigator.wakeLock.request('screen');
+        wakeLockRef.current.addEventListener?.('release', () => {
+          if (!cancelled) wakeLockRef.current = null;
+        });
+      } catch {
+        wakeLockRef.current = null;
+      }
+    };
+
+    const releaseWakeLock = async () => {
+      try {
+        await wakeLockRef.current?.release?.();
+      } catch {
+        // Ignore release failures during page transitions.
+      } finally {
+        wakeLockRef.current = null;
+      }
+    };
+
+    if (shouldHoldWakeLock) {
+      requestWakeLock();
+    } else {
+      releaseWakeLock();
+    }
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && shouldHoldWakeLock && !wakeLockRef.current) {
+        requestWakeLock();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      cancelled = true;
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      releaseWakeLock();
+    };
+  }, [mobileMode, routeActive]);
+
+  useEffect(() => {
     const getPipMapSize = () => {
       const surfaceRect = mapRef.current?.getBoundingClientRect?.();
       const bodyRect = document.body.getBoundingClientRect();
@@ -4503,7 +4703,7 @@ export default function App() {
       || stepIndex >= Math.max(1, latestRouteMetaRef.current?.steps?.length || 1) - 1;
     const targetProgressMeters = isFinalPreviewStep && Number.isFinite(routeLengthMeters)
       ? Math.max(0, routeLengthMeters - 4)
-      : Math.max(0, routeProgress.progressMeters || 0);
+      : Math.max(0, Number.isFinite(step.progressMeters) ? step.progressMeters : (routeProgress.progressMeters || 0));
     const routePoint = getRoutePointAtProgress(routeCoordinates, targetProgressMeters);
     const previewCoords = routePoint?.point || routeProgress.nearestPoint || step.coords;
     const previewHeading = Number.isFinite(routePoint?.heading)
@@ -4616,6 +4816,35 @@ export default function App() {
     } catch (error) {
       console.error('Logout failed', error);
       triggerToast("Logout", error?.message || 'Logout failed.', true);
+    }
+  };
+
+  const handleMobileDeleteAccount = async () => {
+    playClickSound();
+    const confirmed = window.confirm('Delete your Spider Maps account and all synced auth data?');
+    if (!confirmed) return;
+
+    try {
+      const currentUser = firebaseAuth.currentUser;
+      if (!currentUser) {
+        triggerToast('Delete Account', 'Please sign in first, then try again.', true);
+        return;
+      }
+
+      await deleteUser(currentUser);
+      if (isNativeCapacitorApp()) {
+        await FirebaseAuthentication.signOut().catch(() => undefined);
+      }
+      await signOut(firebaseAuth).catch(() => undefined);
+      triggerToast('Delete Account', 'Your account was deleted.', false);
+      setMobileSettingsPage('home');
+    } catch (error) {
+      console.error('Delete account failed', error);
+      if (error?.code === 'auth/requires-recent-login') {
+        triggerToast('Delete Account', 'Please sign in again, then retry deletion.', true);
+        return;
+      }
+      triggerToast('Delete Account', error?.message || 'Delete account failed.', true);
     }
   };
 
@@ -5387,29 +5616,34 @@ export default function App() {
     }
   };
 
-  const getGpsPosition = () => new Promise((resolve, reject) => {
-    if (!navigator.geolocation) {
-      reject({ code: 0, message: 'Geolocation is not supported in this browser.' });
-      return;
+  const getGpsPosition = async () => {
+    if (Capacitor.isNativePlatform()) {
+      let perm = await Geolocation.checkPermissions();
+      if (perm.location !== 'granted' && perm.coarseLocation !== 'granted') {
+        perm = await Geolocation.requestPermissions();
+        if (perm.location !== 'granted' && perm.coarseLocation !== 'granted') {
+          throw { code: 1, message: 'Location permission was denied.' };
+        }
+      }
+      const pos = await Geolocation.getCurrentPosition({ enableHighAccuracy: true, timeout: 15000, maximumAge: 15000 });
+      return pos;
     }
 
-    navigator.geolocation.getCurrentPosition(
-      resolve,
-      (firstError) => {
-        if (firstError.code === 1) {
-          reject(firstError);
-          return;
-        }
-
-        navigator.geolocation.getCurrentPosition(
-          resolve,
-          reject,
-          { enableHighAccuracy: false, timeout: 20000, maximumAge: 60000 }
-        );
-      },
-      { enableHighAccuracy: true, timeout: 15000, maximumAge: 15000 }
-    );
-  });
+    return new Promise((resolve, reject) => {
+      if (!navigator.geolocation) {
+        reject({ code: 0, message: 'Geolocation is not supported in this browser.' });
+        return;
+      }
+      navigator.geolocation.getCurrentPosition(
+        resolve,
+        (firstError) => {
+          if (firstError.code === 1) { reject(firstError); return; }
+          navigator.geolocation.getCurrentPosition(resolve, reject, { enableHighAccuracy: false, timeout: 20000, maximumAge: 60000 });
+        },
+        { enableHighAccuracy: true, timeout: 15000, maximumAge: 15000 }
+      );
+    });
+  };
 
 const getGpsErrorMessage = (error) => {
     if (error?.code === 1) return "Location permission is blocked for this browser tab.";
@@ -5564,6 +5798,27 @@ const getGpsErrorMessage = (error) => {
 
     triggerToast("Getting Location", "Requesting your current location...", false);
     try {
+      // On native platforms, first ask the app to check Location Settings (high accuracy)
+      if (Capacitor.isNativePlatform() && window.SpiderMapsNative && typeof window.SpiderMapsNative.checkLocationSettings === 'function') {
+        // wait for the native settings check or resolution dialog result (event spider:location-settings)
+        const settingsPromise = new Promise((resolve) => {
+          const handler = (ev) => {
+            window.removeEventListener('spider:location-settings', handler);
+            resolve(ev.detail && ev.detail.enabled);
+          };
+          window.addEventListener('spider:location-settings', handler);
+          try {
+            window.SpiderMapsNative.checkLocationSettings();
+          } catch (e) {
+            // ignore
+            resolve(false);
+          }
+          // fallback timeout
+          setTimeout(() => { window.removeEventListener('spider:location-settings', handler); resolve(false); }, 6000);
+        });
+        await settingsPromise;
+      }
+
       const position = await getGpsPosition();
       const coords = [position.coords.latitude, position.coords.longitude];
       showUserLocation({
@@ -5695,6 +5950,8 @@ const getGpsErrorMessage = (error) => {
                   mapReadSuggestionsRef.current = [];
                   setSearchQuery(e.target.value);
                 }}
+                onFocus={() => setSearchFocused(true)}
+                onBlur={() => window.setTimeout(() => setSearchFocused(false), 200)}
                 className="bg-transparent text-slate-100 placeholder-slate-400 font-sans text-sm focus:outline-none w-full"
               />
             </div>
@@ -5888,7 +6145,7 @@ const getGpsErrorMessage = (error) => {
           {routeActive && routeMeta && (
             <div className="pip-navigation-card" aria-hidden="true">
               <div className="pip-instruction-panel">
-                <div className="pip-turn-icon">{getManeuverDisplay(routeMeta.instruction).symbol}</div>
+                <div className="pip-turn-icon">{getManeuverDisplay(routeMeta.instruction, routeMeta.maneuverKind).symbol}</div>
                 <div className="min-w-0 flex-1">
                   <div className="pip-road-name">{routeMeta.instruction || 'Continue'}</div>
                   <div className="pip-route-time">{routeMeta.distance || '--'} - {routeMeta.duration || '--'}</div>
@@ -5920,6 +6177,8 @@ const getGpsErrorMessage = (error) => {
                 mapReadSuggestionsRef.current = [];
                 setSearchQuery(e.target.value);
               }}
+              onFocus={() => setSearchFocused(true)}
+              onBlur={() => window.setTimeout(() => setSearchFocused(false), 200)}
               className="min-w-0 flex-1 bg-transparent text-base font-medium text-slate-100 placeholder:text-slate-300 focus:outline-none"
             />
             <button type="button" onClick={routeSearchTarget === 'from' ? useGpsRouteStart : () => triggerToast("Choose Place", "Search and select a place from the list.", true)} className="grid h-10 w-10 shrink-0 place-items-center rounded-full text-slate-100" title="Get your location">
@@ -5966,7 +6225,7 @@ const getGpsErrorMessage = (error) => {
             </div>
           )}
 
-          {!routeSearchTarget && !searchQuery.trim() && searchHistory.length > 0 && (
+          {!routeSearchTarget && !searchQuery.trim() && searchFocused && searchHistory.length > 0 && (
             <div className="pointer-events-auto max-h-[34vh] overflow-y-auto rounded-3xl bg-[#121212]/96 py-2 shadow-2xl">
               <div className="px-4 pb-1 pt-2 text-[10px] font-bold uppercase tracking-wide text-slate-500">
                 Recent searches
@@ -6339,6 +6598,7 @@ const getGpsErrorMessage = (error) => {
             onSpeedUnitChange={handleSpeedUnitChange}
             onLogin={handleMobileLogin}
             onLogout={handleMobileLogout}
+            onDeleteAccount={handleMobileDeleteAccount}
             authUser={authUser}
             authBusy={authBusy}
           />
