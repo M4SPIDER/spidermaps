@@ -168,6 +168,7 @@ export default function MobileSettingsPage({
   onSpeedUnitChange,
   onLogin,
   onLogout,
+  onDeleteAccount,
   authUser,
   authBusy = false
 }) {
@@ -356,19 +357,20 @@ export default function MobileSettingsPage({
             ))}
           </section>
 
-          {/* Native HTML link pointing straight to your website routing path */}
-          <section className="rounded-3xl border border-rose-500/10 bg-rose-500/[0.02] p-3">
-            <a 
-              href="/delete-account" 
-              className="flex w-full items-center gap-3 rounded-2xl px-3 py-3 text-left text-rose-300/90 active:bg-rose-500/5 transition-colors decoration-transparent selection:bg-transparent"
-            >
-              <span className="grid h-9 w-9 place-items-center rounded-full bg-rose-500/10 text-rose-400">
-                <Trash2 size={18} />
-              </span>
-              <span className="flex-1 font-semibold">Delete Account</span>
-              <ChevronRight size={18} className="text-rose-500/40" />
-            </a>
-          </section>
+            {/* Account deletion stays inside the app so it can use the signed-in Firebase user. */}
+            <section className="rounded-3xl border border-rose-500/10 bg-rose-500/[0.02] p-3">
+              <button
+                type="button"
+                onClick={onDeleteAccount}
+                className="flex w-full items-center gap-3 rounded-2xl px-3 py-3 text-left text-rose-300/90 active:bg-rose-500/5 transition-colors decoration-transparent selection:bg-transparent"
+              >
+                <span className="grid h-9 w-9 place-items-center rounded-full bg-rose-500/10 text-rose-400">
+                  <Trash2 size={18} />
+                </span>
+                <span className="flex-1 font-semibold">Delete Account</span>
+                <ChevronRight size={18} className="text-rose-500/40" />
+              </button>
+            </section>
         </div>
       </div>
 
