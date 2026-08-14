@@ -13,7 +13,7 @@ import {
 import 'maplibre-gl/dist/maplibre-gl.css';
 import './index.css';
 import MobileNavigationPanel from './components/MobileNavigationPanel.jsx';
-import MobileSettingsPage from './components/MobileSettingsPage.jsx';
+import MenuSettingsDrawer from './components/MobileSettingsPage.jsx';
 import { customMapPlaces } from './mapPlaces.js';
 import { 
   Menu, 
@@ -1617,9 +1617,8 @@ export default function App() {
   const [navTelemetry, setNavTelemetry] = useState({ speedKmh: 0, coveredKm: 0, heading: 0, accuracy: null });
   const [mobileSheetOpen, setMobileSheetOpen] = useState(true);
   const [mobileMode, setMobileMode] = useState('place');
-  const [mobileNavMenuOpen, setMobileNavMenuOpen] = useState(false);
-  const [mobileRecenterExpanded, setMobileRecenterExpanded] = useState(false);
   const [mobileSettingsPage, setMobileSettingsPage] = useState(null);
+  const [isEmbedState, setIsEmbedState] = useState(false);
   const [speedUnit, setSpeedUnit] = useState('kmph');
   const [compareModalOpen, setCompareModalOpen] = useState(false);
   const [layersMenuOpen, setLayersMenuOpen] = useState(false);
@@ -5717,6 +5716,8 @@ const getGpsErrorMessage = (error) => {
                       window.self !== window.top;
       if (isEmbed) {
         document.body.classList.add('spider-embed-mode');
+        setMapStyle('light');
+        setIsEmbedState(true);
       }
     } catch (e) {}
 
@@ -6611,7 +6612,7 @@ const getGpsErrorMessage = (error) => {
         )}
 
         {mobileSettingsPage && (
-          <MobileSettingsPage
+          <MenuSettingsDrawer
             page={mobileSettingsPage}
             speedUnit={speedUnit}
             onClose={() => { playClickSound(); setMobileSettingsPage(null); }}
@@ -7085,6 +7086,31 @@ const getGpsErrorMessage = (error) => {
                 DISMISS PREVIEW
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* GMAPS STYLE EMBED DESTINATION CARD */}
+      {isEmbedState && (
+        <div className="gmaps-embed-badge">
+          <div>
+            <div className="gmaps-embed-badge-title">
+              {activeLocation?.name || "Tokyo Office — Sapphire Asia KK"}
+            </div>
+            <div className="gmaps-embed-badge-sub">
+              {activeLocation?.address || "〒110-0005 Tokyo, Taito City, Ueno, 3-20-2 Mizuno building B"}
+            </div>
+          </div>
+          <div className="gmaps-embed-badge-actions">
+            <a
+              href={buildSpiderMapsShareUrl(activeLocation?.coords || [35.70584, 139.77352], activeLocation?.name || "Sapphire Asia KK")}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="gmaps-embed-action-btn"
+              title="Get Directions on SpiderMaps"
+            >
+              <Navigation size={16} />
+            </a>
           </div>
         </div>
       )}
