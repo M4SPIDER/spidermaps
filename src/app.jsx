@@ -4772,6 +4772,11 @@ export default function App() {
     playClickSound();
     setLayersMenuOpen(false);
     setMobileNavMenuOpen(false);
+    setRouteActive(false);
+    setRouteMeta(null);
+    setRouteAlternatives([]);
+    setSelectedRouteId(null);
+    setSearchFocused(false);
     setMobileSettingsPage(page);
   };
 
@@ -5870,6 +5875,13 @@ const getGpsErrorMessage = (error) => {
             <button 
               onClick={() => { 
                 playClickSound(); 
+                setLayersMenuOpen(false);
+                setRouteActive(false);
+                setRouteMeta(null);
+                setRouteAlternatives([]);
+                setSelectedRouteId(null);
+                setSearchFocused(false);
+                setMobileNavMenuOpen(false);
                 setDesktopMenuOpen((open) => !open); 
               }}
               className={`w-10 h-10 rounded-full flex items-center justify-center transition-colors ${
