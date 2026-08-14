@@ -1386,8 +1386,9 @@ const makeCirclePolygon = ([lat, lng], radiusMeters, steps = 48) => {
 
 const MAP_STYLE_URLS = {
   dark: 'https://tiles.openfreemap.org/styles/liberty',
-  light: 'https://tiles.openfreemap.org/styles/positron',
-  normal: 'https://tiles.openfreemap.org/styles/liberty',
+  light: 'https://tiles.openfreemap.org/styles/bright',
+  normal: 'https://tiles.openfreemap.org/styles/bright',
+  bright: 'https://tiles.openfreemap.org/styles/bright',
   satellite: 'satellite'
 };
 
