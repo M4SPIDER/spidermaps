@@ -1617,8 +1617,8 @@ export default function App() {
   const [selectedRouteId, setSelectedRouteId] = useState(null);
   const [navTelemetry, setNavTelemetry] = useState({ speedKmh: 0, coveredKm: 0, heading: 0, accuracy: null });
   const [mobileSheetOpen, setMobileSheetOpen] = useState(true);
-  const [mobileMode, setMobileMode] = useState('place');
   const [mobileSettingsPage, setMobileSettingsPage] = useState(null);
+  const [desktopMenuOpen, setDesktopMenuOpen] = useState(false);
   const [isEmbedState, setIsEmbedState] = useState(false);
   const [speedUnit, setSpeedUnit] = useState('kmph');
   const [compareModalOpen, setCompareModalOpen] = useState(false);
@@ -5867,16 +5867,16 @@ const getGpsErrorMessage = (error) => {
             <button 
               onClick={() => { 
                 playClickSound(); 
-                setMobileSettingsPage((current) => current ? null : 'home'); 
+                setDesktopMenuOpen((open) => !open); 
               }}
               className={`w-10 h-10 rounded-full flex items-center justify-center transition-colors ${
-                mobileSettingsPage 
+                desktopMenuOpen 
                   ? 'bg-cyan-400/20 text-cyan-300 border border-cyan-400/40' 
                   : 'hover:bg-[#1c2541] text-[#06b6d4]'
               }`}
-              title={mobileSettingsPage ? "Close Menu" : "Menu"}
+              title={desktopMenuOpen ? "Close Menu" : "Menu"}
             >
-              {mobileSettingsPage ? <X size={20} /> : <Menu size={20} />}
+              {desktopMenuOpen ? <X size={20} /> : <Menu size={20} />}
             </button>
 
             {/* Petrol pump search */}
@@ -5953,6 +5953,69 @@ const getGpsErrorMessage = (error) => {
             </button>
           </div>
         </nav>
+
+        {/* DESKTOP NATIVE MENU DROPDOWN */}
+        {desktopMenuOpen && (
+          <div className="absolute left-20 top-4 z-[95] w-80 rounded-2xl border border-[#06b6d4]/40 bg-[#0b132b]/95 p-5 shadow-2xl backdrop-blur-md hidden md:block">
+            <div className="flex items-center justify-between border-b border-white/10 pb-3">
+              <div className="text-xs font-black uppercase tracking-[0.2em] text-[#06b6d4]">Desktop Menu</div>
+              <button 
+                onClick={() => setDesktopMenuOpen(false)} 
+                className="rounded-full p-1 text-slate-400 hover:bg-white/10 hover:text-white transition-colors"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="mt-4 space-y-4 text-xs">
+              <div>
+                <div className="mb-2 font-bold uppercase tracking-wider text-slate-400">Map Style</div>
+                <div className="grid grid-cols-2 gap-2">
+                  {[
+                    ['bright', 'Bright (GMaps)'],
+                    ['liberty', 'Liberty'],
+                    ['dark', 'Dark'],
+                    ['satellite', 'Satellite']
+                  ].map(([id, label]) => (
+                    <button
+                      key={id}
+                      onClick={() => { playClickSound(); setMapStyle(id); }}
+                      className={`rounded-xl border px-3 py-2 text-left font-bold transition-all ${
+                        mapStyle === id 
+                          ? 'border-[#06b6d4] bg-[#06b6d4]/15 text-[#06b6d4]' 
+                          : 'border-white/10 bg-white/5 text-slate-300 hover:bg-white/10'
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="border-t border-white/10 pt-3 space-y-2">
+                <button
+                  onClick={() => { handleCategoryClick('fuel'); setDesktopMenuOpen(false); }}
+                  className="flex w-full items-center gap-3 rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-slate-200 hover:border-[#06b6d4]/40 transition-colors"
+                >
+                  <Fuel size={16} className="text-[#06b6d4]" />
+                  <span className="font-bold">Find Petrol Pumps</span>
+                </button>
+
+                <button
+                  onClick={() => {
+                    playClickSound();
+                    triggerToast("Saved Places", savedPlaces.length ? `${savedPlaces.length} saved place${savedPlaces.length === 1 ? '' : 's'} stored.` : "No saved places yet.", false);
+                    setDesktopMenuOpen(false);
+                  }}
+                  className="flex w-full items-center gap-3 rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-slate-200 hover:border-[#06b6d4]/40 transition-colors"
+                >
+                  <Bookmark size={16} className="text-[#06b6d4]" />
+                  <span className="font-bold">Saved Places ({savedPlaces.length})</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* 2. MAIN FLOATING SEARCH PANEL - Solid High-Contrast Dark Blue background (No transparent washouts!) */}
         <section className="absolute top-3 left-3 right-3 z-30 hidden flex-col gap-2 pointer-events-none md:top-4 md:left-20 md:right-auto md:flex md:w-[390px] md:max-w-[calc(100vw-85px)]">
