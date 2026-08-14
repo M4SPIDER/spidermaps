@@ -1,5 +1,6 @@
 import React from 'react';
 import {
+  ChevronLeft,
   ChevronRight,
   Gauge,
   Info,
@@ -102,11 +103,6 @@ const pageContent = {
             text: "Geographic infrastructure vectors and point-of-interest layers provided by OpenStreetMap contributors."
           },
           {
-            title: "Capacitor Mobile Shell",
-            meta: "MIT License",
-            text: "Copyright (c) 2017-present Drifty Co. (Ionic). Bridges web code securely to Android/iOS native contexts."
-          },
-          {
             title: "Firebase Web SDK",
             meta: "Apache 2.0",
             text: "Copyright 2020 Google LLC. Powers fast cross-platform environment preference lookups and sign-in pipelines."
@@ -115,11 +111,6 @@ const pageContent = {
             title: "Node.js Runtime Environment",
             meta: "MIT License",
             text: "Copyright Node.js contributors. Foundations supporting dependencies in package configuration environments."
-          },
-          {
-            title: "Kotlin Framework Tools",
-            meta: "Apache 2.0",
-            text: "Copyright 2010-2026 JetBrains s.r.o. Cross-compiled native modules handling background platform events."
           },
           {
             title: "Project-OSRM Router",
@@ -176,6 +167,17 @@ export default function MobileSettingsPage({
   const [authMode, setAuthMode] = React.useState('login');
   const [email, setEmail] = React.useState('');
   const [password, setPassword] = React.useState('');
+
+  // Close on Escape key
+  React.useEffect(() => {
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        onClose?.();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
   
   const active = pageContent[page];
 
@@ -227,152 +229,166 @@ export default function MobileSettingsPage({
     return fallback.charAt(0).toUpperCase();
   };
 
-  if (active) {
-    return (
-      <div className="fixed inset-0 z-[90] bg-[#101113] text-white md:hidden will-change-transform">
-        <div className="flex h-full flex-col">
-          <div className="flex items-center gap-3 border-b border-white/10 px-4 pb-3 pt-[calc(env(safe-area-inset-top)+14px)]">
-            <button 
-              type="button" 
-              onClick={() => onOpenPage('home')} 
-              className="grid h-11 w-11 place-items-center rounded-full bg-white/10 text-white active:scale-95 transition-transform" 
-              title="Back"
-            >
-              <X size={22} />
-            </button>
-            <h2 className="min-w-0 flex-1 truncate text-xl font-semibold">{active.title}</h2>
-          </div>
-
-          <div className="flex-1 overflow-y-auto px-5 py-5 flex flex-col">
-            {page === 'navigation' ? (
-              <div className="space-y-5">
-                <section className="rounded-3xl border border-white/10 bg-white/[0.04] p-4">
-                  <div className="mb-4 flex items-center gap-3">
-                    <Gauge size={22} className="text-cyan-300" />
-                    <div>
-                      <h3 className="font-semibold text-white">Speedometer</h3>
-                      <p className="text-sm text-slate-400">Choose live navigation speed unit.</p>
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    {['kmph', 'mph'].map((unit) => (
-                      <button
-                        key={unit}
-                        type="button"
-                        onClick={() => onSpeedUnitChange(unit)}
-                        className={`rounded-2xl border px-4 py-3 text-sm font-bold uppercase transition-all duration-200 ${
-                          speedUnit === unit 
-                            ? 'border-cyan-300 bg-cyan-400/15 text-cyan-200 shadow-[0_0_12px_rgba(34,211,238,0.1)]' 
-                            : 'border-white/10 bg-black/20 text-slate-300'
-                        }`}
-                      >
-                        {unit}
-                      </button>
-                    ))}
-                  </div>
-                </section>
-              </div>
-            ) : active.body}
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  const rows = [
-    { id: 'about', label: 'About', icon: <Info size={20} /> },
-    { id: 'navigation', label: 'Navigation', icon: <Gauge size={20} /> },
-    { id: 'terms', label: 'Terms Of Service', icon: <Scale size={20} /> },
-    { id: 'privacy', label: 'Privacy Policy', icon: <Shield size={20} /> },
-    { id: 'licenses', label: 'Licenses & Attributions', icon: <Settings size={20} /> }
-  ];
-
   return (
-    <div className="fixed inset-0 z-[90] bg-[#101113] text-white md:hidden transform-gpu">
-      <div className="flex h-full flex-col">
-        <div className="flex items-center gap-3 border-b border-white/10 px-4 pb-3 pt-[calc(env(safe-area-inset-top)+14px)]">
-          <button 
-            type="button" 
-            onClick={onClose} 
-            className="grid h-11 w-11 place-items-center rounded-full bg-white/10 text-white active:scale-95 transition-transform" 
-            title="Close settings"
-          >
-            <X size={22} />
-          </button>
-          <h2 className="min-w-0 flex-1 truncate text-xl font-semibold">Settings</h2>
-        </div>
+    <>
+      {/* Backdrop overlay: Clicking anywhere outside drawer closes the menu */}
+      <div 
+        onClick={onClose} 
+        className="fixed inset-0 z-[85] bg-black/40 backdrop-blur-[2px] transition-opacity cursor-pointer"
+        aria-label="Close menu drawer"
+      />
 
-        <div className="flex-1 overflow-y-auto px-4 py-5">
-          <section className="mb-5 rounded-3xl border border-white/10 bg-white/[0.04] p-3">
-            {authUser ? (
-              <>
-                <div className="flex items-center gap-3 rounded-2xl px-3 py-3">
-                  {authUser.photoURL ? (
-                    <img src={authUser.photoURL} alt="" className="h-11 w-11 rounded-full border border-cyan-200/30 object-cover" />
-                  ) : (
-                    <div className="grid h-11 w-11 place-items-center rounded-full bg-cyan-300 text-base font-black text-[#062024]">
-                      {getAvatarLetter()}
+      {active ? (
+        <div className="fixed inset-0 md:left-16 md:right-auto md:w-96 md:border-r md:border-white/10 z-[90] bg-[#101113] text-white transform-gpu shadow-2xl">
+          <div className="flex h-full flex-col">
+            <div className="flex items-center justify-between border-b border-white/10 px-4 pb-3 pt-[calc(env(safe-area-inset-top)+14px)]">
+              <button 
+                type="button" 
+                onClick={() => onOpenPage('home')} 
+                className="grid h-11 w-11 place-items-center rounded-full bg-white/10 text-white active:scale-95 transition-transform" 
+                title="Back to Menu"
+              >
+                <ChevronLeft size={22} />
+              </button>
+
+              <h2 className="min-w-0 flex-1 px-2 truncate text-xl font-semibold">{active.title}</h2>
+
+              <button 
+                type="button" 
+                onClick={onClose} 
+                className="grid h-11 w-11 place-items-center rounded-full bg-white/10 text-white hover:bg-rose-500/20 hover:text-rose-400 active:scale-95 transition-all" 
+                title="Close Menu"
+              >
+                <X size={22} />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto px-5 py-5 flex flex-col">
+              {page === 'navigation' ? (
+                <div className="space-y-5">
+                  <section className="rounded-3xl border border-white/10 bg-white/[0.04] p-4">
+                    <div className="mb-4 flex items-center gap-3">
+                      <Gauge size={22} className="text-cyan-300" />
+                      <div>
+                        <h3 className="font-semibold text-white">Speedometer</h3>
+                        <p className="text-sm text-slate-400">Choose live navigation speed unit.</p>
+                      </div>
                     </div>
-                  )}
-                  <div className="min-w-0 flex-1">
-                    <h3 className="truncate font-bold text-white">{authUser.displayName || 'Signed in'}</h3>
-                    <p className="truncate text-sm text-slate-400">{authUser.email}</p>
-                  </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      {['kmph', 'mph'].map((unit) => (
+                        <button
+                          key={unit}
+                          type="button"
+                          onClick={() => onSpeedUnitChange(unit)}
+                          className={`rounded-2xl border px-4 py-3 text-sm font-bold uppercase transition-all duration-200 ${
+                            speedUnit === unit 
+                              ? 'border-cyan-300 bg-cyan-400/15 text-cyan-200 shadow-[0_0_12px_rgba(34,211,238,0.1)]' 
+                              : 'border-white/10 bg-black/20 text-slate-300'
+                          }`}
+                        >
+                          {unit}
+                        </button>
+                      ))}
+                    </div>
+                  </section>
                 </div>
-                <button 
-                  type="button" 
-                  onClick={onLogout} 
-                  disabled={authBusy} 
-                  className="flex w-full items-center gap-3 rounded-2xl px-3 py-3 text-left text-rose-200 active:bg-white/5 disabled:opacity-50 transition-opacity"
-                >
-                  <LogOut size={20} />
-                  <span className="flex-1 font-semibold">Logout</span>
-                </button>
-              </>
-            ) : (
-              <button 
-                type="button" 
-                onClick={() => React.startTransition(() => setAuthModalOpen(true))} 
-                className="flex w-full items-center gap-3 rounded-2xl px-3 py-3 text-left active:bg-white/5 transition-colors"
-              >
-                <LogIn size={20} className="text-cyan-300" />
-                <span className="flex-1 font-semibold">Sign in to M4 Spider</span>
-                <ChevronRight size={18} className="text-slate-500" />
-              </button>
-            )}
-          </section>
-
-          <section className="mb-5 rounded-3xl border border-white/10 bg-white/[0.04] p-3">
-            {rows.map((row) => (
-              <button 
-                key={row.id} 
-                type="button" 
-                onClick={() => onOpenPage(row.id)} 
-                className="flex w-full items-center gap-3 rounded-2xl px-3 py-3 text-left active:bg-white/5 transition-colors"
-              >
-                <span className="grid h-9 w-9 place-items-center rounded-full bg-cyan-400/10 text-cyan-300">{row.icon}</span>
-                <span className="flex-1 font-semibold">{row.label}</span>
-                <ChevronRight size={18} className="text-slate-500" />
-              </button>
-            ))}
-          </section>
-
-            {/* Account deletion stays inside the app so it can use the signed-in Firebase user. */}
-            <section className="rounded-3xl border border-rose-500/10 bg-rose-500/[0.02] p-3">
-              <button
-                type="button"
-                onClick={onDeleteAccount}
-                className="flex w-full items-center gap-3 rounded-2xl px-3 py-3 text-left text-rose-300/90 active:bg-rose-500/5 transition-colors decoration-transparent selection:bg-transparent"
-              >
-                <span className="grid h-9 w-9 place-items-center rounded-full bg-rose-500/10 text-rose-400">
-                  <Trash2 size={18} />
-                </span>
-                <span className="flex-1 font-semibold">Delete Account</span>
-                <ChevronRight size={18} className="text-rose-500/40" />
-              </button>
-            </section>
+              ) : active.body}
+            </div>
+          </div>
         </div>
-      </div>
+      ) : (
+        <div className="fixed inset-0 md:left-16 md:right-auto md:w-96 md:border-r md:border-white/10 z-[90] bg-[#101113] text-white transform-gpu shadow-2xl">
+          <div className="flex h-full flex-col">
+            <div className="flex items-center justify-between border-b border-white/10 px-4 pb-3 pt-[calc(env(safe-area-inset-top)+14px)]">
+              <h2 className="min-w-0 flex-1 truncate text-xl font-semibold">Settings & Menu</h2>
+              <button 
+                type="button" 
+                onClick={onClose} 
+                className="grid h-11 w-11 place-items-center rounded-full bg-white/10 text-white hover:bg-rose-500/20 hover:text-rose-400 active:scale-95 transition-all" 
+                title="Close settings"
+              >
+                <X size={22} />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto px-4 py-5">
+              <section className="mb-5 rounded-3xl border border-white/10 bg-white/[0.04] p-3">
+                {authUser ? (
+                  <>
+                    <div className="flex items-center gap-3 rounded-2xl px-3 py-3">
+                      {authUser.photoURL ? (
+                        <img src={authUser.photoURL} alt="" className="h-11 w-11 rounded-full border border-cyan-200/30 object-cover" />
+                      ) : (
+                        <div className="grid h-11 w-11 place-items-center rounded-full bg-cyan-300 text-base font-black text-[#062024]">
+                          {getAvatarLetter()}
+                        </div>
+                      )}
+                      <div className="min-w-0 flex-1">
+                        <h3 className="truncate font-bold text-white">{authUser.displayName || 'Signed in'}</h3>
+                        <p className="truncate text-sm text-slate-400">{authUser.email}</p>
+                      </div>
+                    </div>
+                    <button 
+                      type="button" 
+                      onClick={onLogout} 
+                      disabled={authBusy} 
+                      className="flex w-full items-center gap-3 rounded-2xl px-3 py-3 text-left text-rose-200 active:bg-white/5 disabled:opacity-50 transition-opacity"
+                    >
+                      <LogOut size={20} />
+                      <span className="flex-1 font-semibold">Logout</span>
+                    </button>
+                  </>
+                ) : (
+                  <button 
+                    type="button" 
+                    onClick={() => React.startTransition(() => setAuthModalOpen(true))} 
+                    className="flex w-full items-center gap-3 rounded-2xl px-3 py-3 text-left active:bg-white/5 transition-colors"
+                  >
+                    <LogIn size={20} className="text-cyan-300" />
+                    <span className="flex-1 font-semibold">Sign in to M4 Spider</span>
+                    <ChevronRight size={18} className="text-slate-500" />
+                  </button>
+                )}
+              </section>
+
+              <section className="mb-5 rounded-3xl border border-white/10 bg-white/[0.04] p-3">
+                {[
+                  { id: 'about', label: 'About', icon: <Info size={20} /> },
+                  { id: 'navigation', label: 'Navigation', icon: <Gauge size={20} /> },
+                  { id: 'terms', label: 'Terms Of Service', icon: <Scale size={20} /> },
+                  { id: 'privacy', label: 'Privacy Policy', icon: <Shield size={20} /> },
+                  { id: 'licenses', label: 'Licenses & Attributions', icon: <Settings size={20} /> }
+                ].map((row) => (
+                  <button 
+                    key={row.id} 
+                    type="button" 
+                    onClick={() => onOpenPage(row.id)} 
+                    className="flex w-full items-center gap-3 rounded-2xl px-3 py-3 text-left active:bg-white/5 transition-colors"
+                  >
+                    <span className="grid h-9 w-9 place-items-center rounded-full bg-cyan-400/10 text-cyan-300">{row.icon}</span>
+                    <span className="flex-1 font-semibold">{row.label}</span>
+                    <ChevronRight size={18} className="text-slate-500" />
+                  </button>
+                ))}
+              </section>
+
+              <section className="rounded-3xl border border-rose-500/10 bg-rose-500/[0.02] p-3">
+                <button
+                  type="button"
+                  onClick={onDeleteAccount}
+                  className="flex w-full items-center gap-3 rounded-2xl px-3 py-3 text-left text-rose-300/90 active:bg-rose-500/5 transition-colors decoration-transparent selection:bg-transparent"
+                >
+                  <span className="grid h-9 w-9 place-items-center rounded-full bg-rose-500/10 text-rose-400">
+                    <Trash2 size={18} />
+                  </span>
+                  <span className="flex-1 font-semibold">Delete Account</span>
+                  <ChevronRight size={18} className="text-rose-500/40" />
+                </button>
+              </section>
+            </div>
+          </div>
+        </div>
+      )}
 
       {authModalOpen && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 px-4 backdrop-blur-sm animate-fade-in will-change-transform">
@@ -473,6 +489,6 @@ export default function MobileSettingsPage({
           </form>
         </div>
       )}
-    </div>
+    </>
   );
 }
