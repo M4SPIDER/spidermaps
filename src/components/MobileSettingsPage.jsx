@@ -239,7 +239,7 @@ export default function MobileSettingsPage({
       />
 
       {active ? (
-        <div className="fixed inset-0 md:left-16 md:right-auto md:w-96 md:border-r md:border-white/10 z-[90] bg-[#101113] text-white transform-gpu shadow-2xl">
+        <div className="fixed inset-0 z-[90] bg-[#101113] text-white md:hidden transform-gpu shadow-2xl">
           <div className="flex h-full flex-col">
             <div className="flex items-center justify-between border-b border-white/10 px-4 pb-3 pt-[calc(env(safe-area-inset-top)+14px)]">
               <button 
@@ -297,7 +297,7 @@ export default function MobileSettingsPage({
           </div>
         </div>
       ) : (
-        <div className="fixed inset-0 md:left-16 md:right-auto md:w-96 md:border-r md:border-white/10 z-[90] bg-[#101113] text-white transform-gpu shadow-2xl">
+        <div className="fixed inset-0 z-[90] bg-[#101113] text-white md:hidden transform-gpu shadow-2xl">
           <div className="flex h-full flex-col">
             <div className="flex items-center justify-between border-b border-white/10 px-4 pb-3 pt-[calc(env(safe-area-inset-top)+14px)]">
               <h2 className="min-w-0 flex-1 truncate text-xl font-semibold">Settings & Menu</h2>
