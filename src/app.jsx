@@ -1617,6 +1617,9 @@ export default function App() {
   const [selectedRouteId, setSelectedRouteId] = useState(null);
   const [navTelemetry, setNavTelemetry] = useState({ speedKmh: 0, coveredKm: 0, heading: 0, accuracy: null });
   const [mobileSheetOpen, setMobileSheetOpen] = useState(true);
+  const [mobileMode, setMobileMode] = useState('place');
+  const [mobileNavMenuOpen, setMobileNavMenuOpen] = useState(false);
+  const [mobileRecenterExpanded, setMobileRecenterExpanded] = useState(false);
   const [mobileSettingsPage, setMobileSettingsPage] = useState(null);
   const [desktopMenuOpen, setDesktopMenuOpen] = useState(false);
   const [isEmbedState, setIsEmbedState] = useState(false);
