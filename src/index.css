@@ -973,3 +973,25 @@ body.spider-pip-mode .maplibregl-canvas {
     transform: scale(1.45);
   }
 }
+
+/* SpiderMaps Clean Embed Mode (hides all UI overlays, search bars, sheets & navigation) */
+body.spider-embed-mode .fixed,
+body.spider-embed-mode .mobile-bottom-sheet,
+body.spider-embed-mode .map-action-button,
+body.spider-embed-mode .mobile-circle-button,
+body.spider-embed-mode .pip-navigation-card,
+body.spider-embed-mode [role="dialog"],
+body.spider-embed-mode header,
+body.spider-embed-mode nav,
+body.spider-embed-mode aside,
+body.spider-embed-mode form {
+  display: none !important;
+}
+
+body.spider-embed-mode .spider-map-frame {
+  position: fixed !important;
+  inset: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  z-index: 100 !important;
+}

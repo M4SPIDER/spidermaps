@@ -5715,9 +5715,29 @@ const getGpsErrorMessage = (error) => {
   };
 
   useEffect(() => {
+    try {
+      const searchParams = new URLSearchParams(window.location.search);
+      const isEmbed = searchParams.has('embed') ||
+                      searchParams.get('mode') === 'embed' ||
+                      searchParams.get('minimal') === 'true' ||
+                      window.self !== window.top;
+      if (isEmbed) {
+        document.body.classList.add('spider-embed-mode');
+      }
+    } catch (e) {}
+
     const initialCoords = parseExternalMapCoordinates(window.location.href);
     if (initialCoords) {
-      window.setTimeout(() => openExternalMapLocation({ url: window.location.href }), 300);
+      window.setTimeout(() => {
+        openExternalMapLocation({ url: window.location.href });
+        try {
+          const searchParams = new URLSearchParams(window.location.search);
+          if (searchParams.has('embed') || window.self !== window.top) {
+            setMobileSheetOpen(false);
+            setMobileMode(null);
+          }
+        } catch (e) {}
+      }, 300);
     }
 
     const handleExternalMapUrl = (event) => {
